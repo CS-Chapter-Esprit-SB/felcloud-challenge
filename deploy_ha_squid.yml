@@ -1,0 +1,135 @@
+---
+- name: Deploy High-Availability Squid Forward Proxy Cluster
+  hosts: squid_nodes
+  become: true
+
+  vars:
+    squid_port: 3128
+    # Allowed internal subnet range (your openstack subnets)
+    allowed_internal_cidrs:
+      - "10.0.0.0/16"
+
+    # Whitelisted domains allowed for outbound egress
+    allowed_domains:
+      - ".github.com"
+      - ".githubusercontent.com"
+      - ".python.org"
+      - ".pypi.org"
+      - ".ubuntu.com"
+
+  pre_tasks:
+    # 1. Enable Non-Local IP Binding so Squid/Keepalived can bind to VIP on the backup node
+    - name: Enable ip_nonlocal_bind in sysctl
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_nonlocal_bind
+        value: '1'
+        state: present
+        reload: true
+
+    # 2. Install Squid and Keepalived
+    - name: Install Squid and Keepalived
+      ansible.builtin.apt:
+        name:
+          - squid
+          - keepalived
+        state: present
+        update_cache: true
+
+  tasks:
+    # 3. Create Whitelisted Domains List
+    - name: Create Squid ACL allowed domains configuration
+      ansible.builtin.copy:
+        dest: /etc/squid/allowed_domains.acl
+        mode: '0644'
+        content: |
+          {% for domain in allowed_domains %}
+          {{ domain }}
+          {% endfor %}
+      notify: Reload Squid
+
+    # 4. Configure Squid Proxy
+    - name: Configure /etc/squid/squid.conf
+      ansible.builtin.copy:
+        dest: /etc/squid/squid.conf
+        mode: '0644'
+        content: |
+          # Listening Port
+          http_port {{ squid_port }}
+
+          # Define Internal Networks ACL
+          {% for cidr in allowed_internal_cidrs %}
+          acl local_net src {{ cidr }}
+          {% endfor %}
+
+          # Define Whitelisted Domains ACL
+          acl allowed_sites dstdomain "/etc/squid/allowed_domains.acl"
+
+          # Access Control Rules
+          http_access allow local_net allowed_sites
+          http_access deny all
+
+          # Privacy & Anonymity Headers
+          via off
+          forwarded_for delete
+
+          # Disk & Cache Settings
+          cache_dir ufs /var/spool/squid 100 16 256
+          coredump_dir /var/spool/squid
+      notify: Restart Squid
+
+    # 5. Configure Keepalived VRRP for Squid VIP
+    - name: Configure Keepalived for Squid VIP
+      ansible.builtin.copy:
+        dest: /etc/keepalived/keepalived.conf
+        mode: '0644'
+        content: |
+          vrrp_script check_squid {
+              script "killall -0 squid"
+              interval 2
+              weight 2
+          }
+
+          vrrp_instance VI_SQUID {
+              state {{ keepalived_role }}
+              interface {{ network_interface }}
+              virtual_router_id 52
+              priority {{ keepalived_priority }}
+              advert_int 1
+
+              authentication {
+                  auth_type PASS
+                  auth_pass "FelCloudSquidVRRPKey"
+              }
+
+              unicast_src_ip {{ ansible_host }}
+              unicast_peer {
+                  {{ peer_ip }}
+              }
+
+              virtual_ipaddress {
+                  {{ squid_vip }}/24 dev {{ network_interface }}
+              }
+
+              track_script {
+                  check_squid
+              }
+          }
+      notify: Restart Keepalived
+
+  handlers:
+    - name: Reload Squid
+      ansible.builtin.service:
+        name: squid
+        state: reloaded
+
+    - name: Restart Squid
+      ansible.builtin.service:
+        name: squid
+        state: restarted
+        enabled: true
+
+    - name: Restart Keepalived
+      ansible.builtin.service:
+        name: keepalived
+        state: restarted
+        enabled: true

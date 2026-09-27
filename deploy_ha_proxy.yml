@@ -1,0 +1,120 @@
+---
+- name: Deploy HAProxy Cluster with Keepalived VRRP
+  hosts: haproxy_nodes
+  become: true
+
+  vars:
+    # -------------------------------------------------------------------------
+    # 1. HAProxy Configuration (geerlingguy.haproxy)
+    # -------------------------------------------------------------------------
+    haproxy_global_vars:
+      - "log /dev/log local0"
+      - "log /dev/log local1 notice"
+      - "chroot /var/lib/haproxy"
+      - "user haproxy"
+      - "group haproxy"
+      - "daemon"
+      - "maxconn 4096"
+
+    haproxy_frontends:
+      - name: 'http-in'
+        address: '*:80'
+        mode: 'http'
+        options:
+          - 'redirect scheme https code 301 if !{ ssl_fc }'
+
+      - name: 'https-in'
+        address: '*:443'
+        mode: 'http'
+        options:
+          - 'bind *:443 ssl crt /etc/haproxy/certs/haproxy.pem'
+          - 'default_backend app-backend'
+
+    haproxy_backends:
+      - name: 'app-backend'
+        mode: 'http'
+        balance: 'roundrobin'
+        options:
+          - 'option httpchk GET /health'
+        servers:
+          - name: 'app1'
+            address: '10.0.1.20:80 check'
+          - name: 'app2'
+            address: '10.0.1.21:80 check'
+
+    # -------------------------------------------------------------------------
+    # 2. Keepalived Configuration (evrardjp.keepalived)
+    # -------------------------------------------------------------------------
+    keepalived_sync_groups:
+      VG1:
+        instances:
+          - VI_1
+
+    keepalived_instances:
+      VI_1:
+        interface: "{{ network_interface }}"
+        state: "{{ keepalived_role }}"
+        virtual_router_id: 51
+        priority: "{{ keepalived_priority }}"
+        authentication:
+          auth_type: PASS
+          auth_pass: "FelCloudSecureVRRPKey"
+        unicast_src_ip: "{{ ansible_host }}"
+        unicast_peers:
+          - "{{ peer_ip }}"
+        vips:
+          - "{{ cluster_vip }}/24 dev {{ network_interface }}"
+        track_scripts:
+          - check_haproxy
+
+    keepalived_scripts:
+      check_haproxy:
+        script: "killall -0 haproxy"
+        interval: 2
+        weight: 2
+
+  pre_tasks:
+    # 1. Enable Non-Local IP Binding (Mandatory for Keepalived VIP on Standby)
+    - name: Allow services to bind to non-local Virtual IPs
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_nonlocal_bind
+        value: '1'
+        state: present
+        reload: true
+
+    # 2. Prepare SSL Certificate directory
+    - name: Ensure HAProxy certs directory exists
+      ansible.builtin.file:
+        path: /etc/haproxy/certs
+        state: directory
+        owner: haproxy
+        group: haproxy
+        mode: '0750'
+
+    # 3. Create OpenSSL Self-Signed SSL Certificate bundle
+    - name: Generate SSL Key and Certificate
+      ansible.builtin.command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout /etc/haproxy/certs/haproxy.key
+        -out /etc/haproxy/certs/haproxy.crt
+        -subj "/CN=felcloud.esprit.tn"
+      args:
+        creates: /etc/haproxy/certs/haproxy.crt
+
+    - name: Create combined PEM bundle for HAProxy
+      ansible.builtin.shell: >
+        cat /etc/haproxy/certs/haproxy.key /etc/haproxy/certs/haproxy.crt > /etc/haproxy/certs/haproxy.pem
+      args:
+        creates: /etc/haproxy/certs/haproxy.pem
+
+    - name: Secure PEM bundle file permissions
+      ansible.builtin.file:
+        path: /etc/haproxy/certs/haproxy.pem
+        owner: haproxy
+        group: haproxy
+        mode: '0600'
+
+  # Roles execute sequentially: HAProxy first, then Keepalived failover daemon
+  roles:
+    - role: geerlingguy.haproxy
+    - role: evrardjp.keepalived
