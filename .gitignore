@@ -2,3 +2,5 @@
 venv/
 clouds.yaml
 clouds.json
+output.log
+inventory.ini
