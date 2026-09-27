@@ -39,6 +39,7 @@ router = openstack.networking.Router(
     name="router-gateway",
     admin_state_up=True,
     external_network_id=ext_net.id,
+    #enable_snat=True,
 )
 
 router_interface_inbound = openstack.networking.RouterInterface(

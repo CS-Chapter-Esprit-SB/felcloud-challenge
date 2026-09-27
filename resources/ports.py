@@ -2,7 +2,8 @@
 import pulumi
 import pulumi_openstack as openstack
 
-from .config import external_network_name
+from .config import  ha_proxy_pool, squid_proxy_pool
+from .helpers import create_floating_ip
 from .network import (
     inbound_net,
     inbound_subnet,
@@ -12,18 +13,6 @@ from .network import (
 )
 from .security_groups import secgroup_fwd_proxy, secgroup_haproxy
 
-# -----------------------------------------------------------------------------
-# Fixed Ports
-# -----------------------------------------------------------------------------
-import pulumi
-
-from .network import (
-    inbound_net,
-    inbound_subnet,
-    outbound_net,
-    outbound_subnet,
-    router_interface_inbound,
-)
 
 # -----------------------------------------------------------------------------
 # 1. HAProxy Active/Passive Cluster Ports & VIP
@@ -57,7 +46,7 @@ haproxy_primary_port = openstack.networking.Port(
     security_group_ids=[secgroup_haproxy.id],
     allowed_address_pairs=[
         openstack.networking.PortAllowedAddressPairArgs(
-            ip_address=vip_haproxy_port.fixed_ips[0].ip_address
+            ip_address=ha_proxy_pool[0]
         )
     ],
 )
@@ -76,7 +65,7 @@ haproxy_backup_port = openstack.networking.Port(
     security_group_ids=[secgroup_haproxy.id],
     allowed_address_pairs=[
         openstack.networking.PortAllowedAddressPairArgs(
-            ip_address=vip_haproxy_port.fixed_ips[0].ip_address
+            ip_address=ha_proxy_pool[0]
         )
     ],
 )
@@ -115,7 +104,7 @@ squid_primary_port = openstack.networking.Port(
     security_group_ids=[secgroup_fwd_proxy.id],
     allowed_address_pairs=[
         openstack.networking.PortAllowedAddressPairArgs(
-            ip_address=vip_squid_port.fixed_ips[0].ip_address
+            ip_address=squid_proxy_pool[0]
         )
     ],
 )
@@ -134,28 +123,23 @@ squid_backup_port = openstack.networking.Port(
     security_group_ids=[secgroup_fwd_proxy.id],
     allowed_address_pairs=[
         openstack.networking.PortAllowedAddressPairArgs(
-            ip_address=vip_squid_port.fixed_ips[0].ip_address
+            ip_address=squid_proxy_pool[0]
         )
     ],
 )
 
 # -----------------------------------------------------------------------------
 # Floating IP (inbound traffic only)
-# -----------------------------------------------------------------------------
 
 
-ext_network = openstack.networking.get_network(name=external_network_name)
-ext_subnets = openstack.networking.get_subnet_ids_v2(network_id=ext_network.id)
-allocated_fip = openstack.networking.FloatingIp("floatip_1",
-    pool=ext_network.name,
-    subnet_ids=ext_subnets.ids)
+allocated_fip = create_floating_ip("haproxy")
 
 # Neutron refuses to bind a floating IP to a port whose subnet has no path to the
 # external network, so the association must wait for the router interface on the
 # inbound subnet. Pulumi cannot infer that ordering from the arguments alone.
 fip_associate_haproxy = openstack.networking.FloatingIpAssociate(
     "fip-associate-haproxy",
-    floating_ip=floatip1.address,
-    port_id=haproxy_port.id,
+    floating_ip=allocated_fip.address,
+    port_id=vip_haproxy_port.id,
     opts=pulumi.ResourceOptions(depends_on=[router_interface_inbound]),
 )

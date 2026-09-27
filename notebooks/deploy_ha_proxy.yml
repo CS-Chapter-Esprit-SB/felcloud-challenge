@@ -17,18 +17,17 @@
       - "maxconn 4096"
 
     haproxy_frontends:
-      - name: 'http-in'
-        address: '*:80'
-        mode: 'http'
-        options:
-          - 'redirect scheme https code 301 if !{ ssl_fc }'
+          - name: 'http-in'
+            address: '*:80'
+            mode: 'http'
+            options:
+              - 'redirect scheme https code 301 if !{ ssl_fc }'
 
-      - name: 'https-in'
-        address: '*:443'
-        mode: 'http'
-        options:
-          - 'bind *:443 ssl crt /etc/haproxy/certs/haproxy.pem'
-          - 'default_backend app-backend'
+          - name: 'https-in'
+            address: '*:443 ssl crt /etc/haproxy/certs/haproxy.pem'
+            mode: 'http'
+            options:
+              - 'default_backend app-backend'
 
     haproxy_backends:
       - name: 'app-backend'
@@ -72,9 +71,8 @@
         script: "killall -0 haproxy"
         interval: 2
         weight: 2
-
-  pre_tasks:
-    # 1. Enable Non-Local IP Binding (Mandatory for Keepalived VIP on Standby)
+  pre_tasks:  
+    # 1. Enable Non-Local IP Binding
     - name: Allow services to bind to non-local Virtual IPs
       ansible.posix.sysctl:
         name: net.ipv4.ip_nonlocal_bind
@@ -82,7 +80,21 @@
         state: present
         reload: true
 
-    # 2. Prepare SSL Certificate directory
+    # 2. Ensure haproxy group & user exist prior to cert generation
+    - name: Ensure haproxy system group exists
+      ansible.builtin.group:
+        name: haproxy
+        state: present
+        system: true
+
+    - name: Ensure haproxy system user exists
+      ansible.builtin.user:
+        name: haproxy
+        group: haproxy
+        system: true
+        shell: /usr/sbin/nologin
+
+    # 3. Prepare SSL Certificate directory
     - name: Ensure HAProxy certs directory exists
       ansible.builtin.file:
         path: /etc/haproxy/certs
@@ -91,7 +103,7 @@
         group: haproxy
         mode: '0750'
 
-    # 3. Create OpenSSL Self-Signed SSL Certificate bundle
+    # 4. Create OpenSSL Self-Signed SSL Certificate bundle
     - name: Generate SSL Key and Certificate
       ansible.builtin.command: >
         openssl req -x509 -nodes -days 365 -newkey rsa:2048
@@ -113,7 +125,6 @@
         owner: haproxy
         group: haproxy
         mode: '0600'
-
   # Roles execute sequentially: HAProxy first, then Keepalived failover daemon
   roles:
     - role: geerlingguy.haproxy
