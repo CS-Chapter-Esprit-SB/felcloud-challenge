@@ -1,25 +1,26 @@
-"""Pulumi entry point for the felcloud.esprit.tn proxy stack.
+"""Pulumi entry point for the RIO gateway stack.
 
-Resource creation lives in the `resources` package, split by concern:
-  - resources/config.py            shared configuration values
-  - resources/network.py           networks, subnets, router
-  - resources/security_groups.py   security groups & rules
-  - resources/ports.py             fixed ports & floating IP
-  - resources/compute.py           HAProxy / forward-proxy instances
+    Internet -> floating IP -> VIP port (10.0.1.10) -> gw-1 / gw-2 (HAProxy + Keepalived)
+             -> sandboxes on the private sandbox network (routed by Host header)
 
-Importing `resources.compute` here pulls in `resources.ports`, which in
-turn pulls in `resources.network` and `resources.security_groups`, so the
-whole dependency chain is instantiated by this single import.
+Pulumi owns what exists (networks, ports, VMs, sandbox lifecycle).
+Ansible owns what runs inside the gateways; it reads the outputs below as its inventory.
 """
 import pulumi
 
-from resources.compute import create  # noqa: F401  (imported for its side effects: creates the VMs)
-from resources.ports import floatip1, fwd_proxy_port, haproxy_port
+from resources.compute import create_gateways
+from resources.config import gateway_ips, vip_address
+from resources.ports import floating_ip
+from resources.sandboxes import create_sandboxes
 
-_ = create()
+create_gateways()
+sandboxes = create_sandboxes()
+
 # -----------------------------------------------------------------------------
-# Outputs
+# Outputs (consumed by the Ansible inventory)
 # -----------------------------------------------------------------------------
-pulumi.export("public_floating_ip", floatip1.address)
-pulumi.export("haproxy_private_ip", haproxy_port.fixed_ips[0].ip_address)
-pulumi.export("forward_proxy_private_ip", fwd_proxy_port.fixed_ips[0].ip_address)
+pulumi.export("public_ip", floating_ip.address)
+pulumi.export("vip", vip_address)
+pulumi.export("gateways", gateway_ips)
+pulumi.export("sandboxes", sandboxes)
+pulumi.export("ssh_jump", floating_ip.address.apply(lambda ip: f"ubuntu@{ip}"))

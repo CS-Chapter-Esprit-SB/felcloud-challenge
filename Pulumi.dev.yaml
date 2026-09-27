@@ -1,2 +1,13 @@
 config:
   openstack:cloud: felcloud
+  felcloud-challenge:adminCidrs:
+    - 0.0.0.0/0 # development only: key-only SSH from anywhere. Tighten before the demo.
+  felcloud-challenge:sshPublicKeys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEreNtzdRKgqkfwghQsfEd7mAx+YZeZIhAYjry+vVyr2 adem
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOU8BsFIWZF3/u9Xa3BTFpPW1fouAx96rkWeA4KQrjY4 aymen # from Nova keypair aymen_key_2
+  felcloud-challenge:sandboxPoolSize: 4 # tiny on purpose while testing
+  felcloud-challenge:sandboxes:
+    - team: team1
+      expires: "2026-10-02T00:00:00+01:00"
+    - team: team2
+      expires: "2026-10-02T00:00:00+01:00"

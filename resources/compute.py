@@ -1,26 +1,26 @@
-"""Compute instances for HAProxy and the forward proxy."""
+"""The two gateway instances. Their software (HAProxy, Keepalived) is installed by Ansible."""
+import pulumi
 import pulumi_openstack as openstack
 
-from .config import flavor_name, image_name
-from .ports import fwd_proxy_port, haproxy_port
-def create()-> tuple[openstack.compute.Instance, openstack.compute.Instance]:
-    """Create the HAProxy and forward proxy instances."""
-    image = openstack.images.get_image(name=image_name)
-    flavor = openstack.compute.get_flavor(name=flavor_name)
+from .cloud_init import gateway_user_data
+from .config import gateway_flavor, image_name
+from .ports import gateway_ports
 
-    haproxy_vm = openstack.compute.Instance(
-        "haproxy-instance",
-        name="vm-haproxy",
-        image_id=image.id,
-        flavor_id=flavor.id,
-        networks=[openstack.compute.InstanceNetworkArgs(port=haproxy_port.id)],
-    )
+image = openstack.images.get_image(name=image_name)
 
-    fwd_proxy_vm = openstack.compute.Instance(
-        "fwd-proxy-instance",
-        name="vm-forward-proxy",
-        image_id=image.id,
-        flavor_id=flavor.id,
-        networks=[openstack.compute.InstanceNetworkArgs(port=fwd_proxy_port.id)],
-    )
-    return haproxy_vm, fwd_proxy_vm
+
+def create_gateways() -> dict[str, openstack.compute.Instance]:
+    flavor = openstack.compute.get_flavor(name=gateway_flavor)
+    return {
+        name: openstack.compute.Instance(
+            f"{name}-instance",
+            name=f"vm-{name}",
+            image_id=image.id,
+            flavor_id=flavor.id,
+            networks=[openstack.compute.InstanceNetworkArgs(port=port.id)],
+            user_data=gateway_user_data(claim_vip=(name == "gw-1")),
+            # The port outlives the VM and can only be bound to one server at a time.
+            opts=pulumi.ResourceOptions(delete_before_replace=True),
+        )
+        for name, port in gateway_ports.items()
+    }

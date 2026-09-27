@@ -1,9 +1,11 @@
-"""Resource definitions for the felcloud.esprit.tn proxy stack, split by concern.
+"""Resource definitions for the RIO gateway stack, split by concern.
 
 Submodules:
-    config           shared configuration values
-    network          networks, subnets, router
-    security_groups  security groups & rules
-    ports            fixed ports & floating IP
-    compute          HAProxy / forward-proxy instances
+    config           stack configuration, addressing plan, sandbox leases
+    cloud_init       user_data for gateways and sandboxes
+    network          gateway and sandbox networks, router
+    security_groups  sg-gateway and sg-sandbox
+    ports            gateway ports, VIP port, floating IP
+    compute          the two gateway instances
+    sandboxes        one instance per active sandbox lease
 """

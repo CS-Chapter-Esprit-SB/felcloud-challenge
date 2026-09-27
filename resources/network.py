@@ -1,33 +1,55 @@
-"""Networks, subnets and the router connecting them to the external provider network."""
+"""Networks, subnets and the router connecting them to the external provider network.
+
+Two networks, one router:
+  - gateway network: the two gateways and the VIP. The only network reachable from outside.
+  - sandbox network: team sandboxes. Private only; reached through the gateways.
+The router routes between them and SNATs all outbound traffic through its single
+external IP, so sandboxes get internet access without consuming public addresses.
+"""
 import pulumi_openstack as openstack
 
-from .config import external_network_name
+from .config import (
+    external_network_name,
+    gateway_cidr,
+    gateway_dhcp_pool,
+    sandbox_cidr,
+    sandbox_dhcp_pool,
+)
 
-# External provider network
 ext_net = openstack.networking.get_network(name=external_network_name)
 
 # -----------------------------------------------------------------------------
 # Networks & Subnets
 # -----------------------------------------------------------------------------
-inbound_net = openstack.networking.Network("inbound-network", name="net-inbound-proxy")
+gateway_net = openstack.networking.Network("gateway-network", name="net-gateway")
 
-inbound_subnet = openstack.networking.Subnet(
-    "inbound-subnet",
-    name="subnet-inbound-proxy",
-    network_id=inbound_net.id,
-    cidr="10.0.1.0/24",
+gateway_subnet = openstack.networking.Subnet(
+    "gateway-subnet",
+    name="subnet-gateway",
+    network_id=gateway_net.id,
+    cidr=gateway_cidr,
     ip_version=4,
+    allocation_pools=[
+        openstack.networking.SubnetAllocationPoolArgs(
+            start=gateway_dhcp_pool[0], end=gateway_dhcp_pool[1]
+        )
+    ],
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
 )
 
-outbound_net = openstack.networking.Network("outbound-network", name="net-outbound-proxy")
+sandbox_net = openstack.networking.Network("sandbox-network", name="net-sandbox")
 
-outbound_subnet = openstack.networking.Subnet(
-    "outbound-subnet",
-    name="subnet-outbound-proxy",
-    network_id=outbound_net.id,
-    cidr="10.0.2.0/24",
+sandbox_subnet = openstack.networking.Subnet(
+    "sandbox-subnet",
+    name="subnet-sandbox",
+    network_id=sandbox_net.id,
+    cidr=sandbox_cidr,
     ip_version=4,
+    allocation_pools=[
+        openstack.networking.SubnetAllocationPoolArgs(
+            start=sandbox_dhcp_pool[0], end=sandbox_dhcp_pool[1]
+        )
+    ],
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
 )
 
@@ -41,14 +63,14 @@ router = openstack.networking.Router(
     external_network_id=ext_net.id,
 )
 
-router_interface_inbound = openstack.networking.RouterInterface(
-    "router-interface-inbound",
+router_interface_gateway = openstack.networking.RouterInterface(
+    "router-interface-gateway",
     router_id=router.id,
-    subnet_id=inbound_subnet.id,
+    subnet_id=gateway_subnet.id,
 )
 
-router_interface_outbound = openstack.networking.RouterInterface(
-    "router-interface-outbound",
+router_interface_sandbox = openstack.networking.RouterInterface(
+    "router-interface-sandbox",
     router_id=router.id,
-    subnet_id=outbound_subnet.id,
+    subnet_id=sandbox_subnet.id,
 )
