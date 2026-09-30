@@ -1,4 +1,5 @@
 """Networks, subnets and the router connecting them to the external provider network."""
+import pulumi
 import pulumi_openstack as openstack
 
 from .config import external_network_name
@@ -30,7 +31,9 @@ outbound_subnet = openstack.networking.Subnet(
     cidr="10.0.2.0/24",
     ip_version=4,
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
-    enable_dhcp=False,
+    # Must stay on: without DHCP the VMs get no address at boot, so cloud-init
+    # never reaches the metadata service and the SSH key is never installed.
+    enable_dhcp=True,
 )
 
 # -----------------------------------------------------------------------------
@@ -41,7 +44,11 @@ router = openstack.networking.Router(
     name="router-gateway",
     admin_state_up=True,
     external_network_id=ext_net.id,
-
+    # Floating IPs only work behind a router with an external gateway, so the router
+    # (and its gateway IP) is kept across `pulumi down --exclude-protected`.
+    # Its SNAT does not forward traffic on FelCloud (verified 2026-09-30), so
+    # internet egress goes through the Squid nodes' own floating IPs instead.
+    opts=pulumi.ResourceOptions(protect=True),
 )
 
 router_interface_inbound = openstack.networking.RouterInterface(

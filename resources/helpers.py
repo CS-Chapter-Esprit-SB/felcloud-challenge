@@ -1,5 +1,7 @@
 # -----------------------------------------------------------------------------
 import os
+
+import pulumi
 from .config import external_network_name
 import pulumi_openstack as openstack
 import inspect
@@ -14,8 +16,17 @@ def generate_inventory_file(args: list[str]) -> None:
         s_backup,
         h_vip_ip,
         s_vip_ip,
+        app_ip,
     ) = args
 
+    key = "~/.ssh/openstack_ansible.pem"
+    ssh_opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    # ProxyJump would ignore ansible_ssh_private_key_file for the bastion hop, so the
+    # key is passed explicitly to the jump connection as well.
+    jump = f"ssh -W %h:%p -q -i {key} {ssh_opts} ubuntu@{bastion_fip}"
+
+    # The interface name is not set here: the playbooks read it from facts
+    # (it is ens3 on FelCloud's Ubuntu image, not eth0).
     inventory_content = inspect.cleandoc(f"""
         [haproxy_nodes]
         haproxy-master ansible_host={h_master} keepalived_role=MASTER keepalived_priority=101 peer_ip={h_backup}
@@ -27,23 +38,24 @@ def generate_inventory_file(args: list[str]) -> None:
 
         [all:vars]
         ansible_user=ubuntu
-        ansible_ssh_private_key_file=~/.ssh/openstack_ansible.pem
+        ansible_ssh_private_key_file={key}
         haproxy_vip={h_vip_ip}
         squid_vip={s_vip_ip}
-        network_interface=eth0
-        ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ForwardAgent=yes -o ProxyJump=ubuntu@{bastion_fip}'
+        app_backend_ip={app_ip}
+        ansible_ssh_common_args='{ssh_opts} -o ProxyCommand="{jump}"'
     """) + "\n"
 
     with open("inventory.ini", "w", encoding="utf-8") as f:
         _ = f.write(inventory_content)
 
-def create_floating_ip(name: str)-> openstack.networking.FloatingIp:
+def create_floating_ip(name: str, opts: pulumi.ResourceOptions | None = None) -> openstack.networking.FloatingIp:
 
     ext_network = openstack.networking.get_network(name=external_network_name)
     ext_subnets = openstack.networking.get_subnet_ids_v2(network_id=ext_network.id)
     allocated_fip = openstack.networking.FloatingIp(f"floatip_{name}",
         pool=ext_network.name,
-        subnet_ids=ext_subnets.ids)
+        subnet_ids=ext_subnets.ids,
+        opts=opts)
     return allocated_fip
 
 def save_private_key(key_content: str) -> None:
