@@ -1,29 +1,77 @@
-"""Security groups and rules for the HAProxy and forward proxy instances."""
+"""Security groups and rules for the HAProxy and forward proxy instances.
+
+Egress policy: only the Squid nodes may talk to the internet. Every other group is
+created without OpenStack's default allow-all egress rules and may only reach the
+private network (which includes the Squid VIP on 3128) and the metadata service.
+Anything internet-bound is dropped at the port unless it goes through Squid.
+"""
 import pulumi_openstack as openstack
+
+INTERNAL_CIDR = "10.0.0.0/16"
+METADATA_IP = "169.254.169.254/32"
+
+
+def _egress_internal_only(prefix: str, security_group: openstack.networking.SecGroup) -> None:
+    """Allow egress to the private network and the metadata service, nothing else."""
+    openstack.networking.SecGroupRule(
+        f"{prefix}-egress-internal",
+        direction="egress",
+        ethertype="IPv4",
+        remote_ip_prefix=INTERNAL_CIDR,
+        security_group_id=security_group.id,
+    )
+    # DHCP discovery is broadcast, which the private-network rule above does not cover.
+    # Without it a VM never gets an address, never reaches metadata, never gets its key.
+    openstack.networking.SecGroupRule(
+        f"{prefix}-egress-dhcp",
+        direction="egress",
+        ethertype="IPv4",
+        protocol="udp",
+        port_range_min=67,
+        port_range_max=67,
+        remote_ip_prefix="255.255.255.255/32",
+        security_group_id=security_group.id,
+    )
+    # cloud-init fetches the SSH key and user data from here at boot.
+    openstack.networking.SecGroupRule(
+        f"{prefix}-egress-metadata",
+        direction="egress",
+        ethertype="IPv4",
+        protocol="tcp",
+        port_range_min=80,
+        port_range_max=80,
+        remote_ip_prefix=METADATA_IP,
+        security_group_id=security_group.id,
+    )
+
 
 # -----------------------------------------------------------------------------
 # Security Groups
 # -----------------------------------------------------------------------------
 secgroup_haproxy = openstack.networking.SecGroup(
     "secgroup-haproxy", 
-    name="sg-haproxy", 
-    description="Allow external HTTPS ingress to HAProxy Cluster"
+    name="sg-haproxy",
+    description="Allow external HTTP/HTTPS ingress to HAProxy Cluster",
+    delete_default_rules=True,
 )
 secgroup_fwd_proxy = openstack.networking.SecGroup(
     "secgroup-fwd-proxy", 
     name="sg-forward-proxy",
-    description="Allow external HTTP ingress to Forward Proxy"
+    # Keeps the default allow-all egress: Squid is the only way out to the internet.
+    description="Squid forward proxy: 3128 from the private network, the only internet egress",
 )
 
 secgroup_bastion = openstack.networking.SecGroup(
     "secgroup-bastion",
     name="sg-bastion",
     description="Allow external SSH ingress to Bastion Jump Host",
+    delete_default_rules=True,
 )
 secgroup_client_vm = openstack.networking.SecGroup(
     "secgroup-client-vm",
     name="sg-client-vm",
-    description="Allow external SSH ingress to Client VM",
+    description="Client VM: SSH from bastion, app port from HAProxy; egress via Squid only",
+    delete_default_rules=True,
 )
 
 # =============================================================================
@@ -41,6 +89,20 @@ rule_haproxy_https = openstack.networking.SecGroupRule(
     remote_ip_prefix="0.0.0.0/0",
     security_group_id=secgroup_haproxy.id,
 )
+
+# Ingress: Public HTTP (80), redirected to HTTPS by HAProxy
+rule_haproxy_http = openstack.networking.SecGroupRule(
+    "rule-haproxy-http",
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=80,
+    port_range_max=80,
+    remote_ip_prefix="0.0.0.0/0",
+    security_group_id=secgroup_haproxy.id,
+)
+
+_egress_internal_only("rule-haproxy", secgroup_haproxy)
 
 # Ingress: VRRP Protocol 112 (Keepalived HA)
 rule_haproxy_vrrp = openstack.networking.SecGroupRule(
@@ -142,6 +204,8 @@ ssh_rule = openstack.networking.SecGroupRule(
     security_group_id=secgroup_bastion.id,
 )
 
+_egress_internal_only("rule-bastion", secgroup_bastion)
+
 # =============================================================================
 # 4. client vm Security Group Rules
 # =============================================================================
@@ -179,14 +243,5 @@ rule_client_vm_icmp = openstack.networking.SecGroupRule(
     security_group_id=secgroup_client_vm.id,
 )
 
-# 4. Egress: Allow outbound TCP to Squid Forward Proxy (Port 3128 on Outbound Subnet)
-rule_client_vm_egress_squid = openstack.networking.SecGroupRule(
-    "rule-client-vm-egress-squid",
-    direction="egress",
-    ethertype="IPv4",
-    protocol="tcp",
-    port_range_min=3128,
-    port_range_max=3128,
-    remote_ip_prefix="10.0.2.0/24",  # Outbound Subnet CIDR where Squid resides
-    security_group_id=secgroup_client_vm.id,
-)
+# 4. Egress: private network (Squid VIP included) and metadata only
+_egress_internal_only("rule-client-vm", secgroup_client_vm)

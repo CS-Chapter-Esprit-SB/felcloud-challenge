@@ -10,6 +10,7 @@ from .network import (
     outbound_net,
     outbound_subnet,
     router_interface_inbound,
+    router_interface_outbound,
 )
 from .security_groups import (
     secgroup_fwd_proxy, 
@@ -159,24 +160,61 @@ client_vm_port = openstack.networking.Port(
 
 
 # -----------------------------------------------------------------------------
-# Floating IP (inbound traffic only)
+# Reserved floating IPs
+# -----------------------------------------------------------------------------
+# Both are protected: `pulumi down --exclude-protected` keeps them allocated to the
+# project, so a redeploy never has to ask an often-exhausted pool for new addresses.
+# The associations are replaced delete-first so `pulumi up --replace <association>`
+# detaches and re-attaches the IP (needed once after the VIP holder changes, see readme).
 
-
-allocated_fip = create_floating_ip("haproxy")
+allocated_fip = create_floating_ip(
+    "haproxy",
+    pulumi.ResourceOptions(
+        protect=True,
+        # Adopt 197.5.133.85, reserved earlier under the logical name "floating-ip".
+        aliases=[pulumi.Alias(name="floating-ip")],
+    ),
+)
 
 fip_associate_haproxy = openstack.networking.FloatingIpAssociate(
     "fip-associate-haproxy",
     floating_ip=allocated_fip.address,
     port_id=vip_haproxy_port.id,
-    opts=pulumi.ResourceOptions(depends_on=[router_interface_inbound]),
+    opts=pulumi.ResourceOptions(
+        depends_on=[router_interface_inbound], delete_before_replace=True
+    ),
 )
 
-allocated_fip_bastian = create_floating_ip("bastion")
+allocated_fip_bastian = create_floating_ip("bastion", pulumi.ResourceOptions(protect=True))
 
+# Same race as the HAProxy association: Neutron rejects the association until the
+# inbound subnet is attached to the router.
 fip_associate_bastion = openstack.networking.FloatingIpAssociate(
     "fip-bastion-associate",
     floating_ip=allocated_fip_bastian.address,
     port_id=bastion_port.id,
-
+    opts=pulumi.ResourceOptions(
+        depends_on=[router_interface_inbound], delete_before_replace=True
+    ),
 )
 
+# -----------------------------------------------------------------------------
+# Reserved egress IPs for the Squid nodes
+# -----------------------------------------------------------------------------
+# FelCloud's router SNAT does not forward traffic (verified 2026-09-30: packets reach
+# the router and die), while floating-IP egress works. So each Squid node gets its own
+# floating IP to reach the internet. Per node rather than on the Squid VIP: the nodes'
+# own traffic (apt) is sourced from their fixed IPs, and a FIP on a VIP breaks when the
+# VIP holder changes. Not an inbound exposure: sg-forward-proxy only admits 10.0.0.0/16.
+squid_egress_fips = {}
+for node, port in (("squid-master", squid_primary_port), ("squid-backup", squid_backup_port)):
+    fip = create_floating_ip(node, pulumi.ResourceOptions(protect=True))
+    openstack.networking.FloatingIpAssociate(
+        f"fip-{node}-associate",
+        floating_ip=fip.address,
+        port_id=port.id,
+        opts=pulumi.ResourceOptions(
+            depends_on=[router_interface_outbound], delete_before_replace=True
+        ),
+    )
+    squid_egress_fips[node] = fip

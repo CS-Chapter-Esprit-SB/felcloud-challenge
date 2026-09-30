@@ -4,6 +4,9 @@
   become: true
 
   vars:
+    iface: "{{ ansible_default_ipv4.interface }}"
+    # Keepalived only uses the first 8 characters of a PASS secret.
+    vrrp_auth_pass: "FelSquid"
     squid_port: 3128
     # Allowed internal subnet range (your openstack subnets)
     allowed_internal_cidrs:
@@ -56,6 +59,10 @@
           # Listening Port
           http_port {{ squid_port }}
 
+          # Exit within 1 s on stop instead of waiting 30 s for open connections:
+          # while stopping, Squid refuses new connections, so every second is an outage.
+          shutdown_lifetime 1 seconds
+
           # Define Internal Networks ACL
           {% for cidr in allowed_internal_cidrs %}
           acl local_net src {{ cidr }}
@@ -77,28 +84,46 @@
           coredump_dir /var/spool/squid
       notify: Restart Squid
 
+    # Health = "accepts a TCP connection on localhost", not "process exists": a stopping
+    # or hung service keeps its process but refuses connections.
+    - name: Install the Keepalived port health check
+      ansible.builtin.copy:
+        dest: /usr/local/bin/check_local_port
+        mode: '0755'
+        owner: root
+        group: root
+        content: |
+          #!/bin/bash
+          # Exit 0 if something accepts TCP connections on 127.0.0.1:$1 within 1 second.
+          exec timeout 1 bash -c "</dev/tcp/127.0.0.1/$1"
+
     # 5. Configure Keepalived VRRP for Squid VIP
     - name: Configure Keepalived for Squid VIP
       ansible.builtin.copy:
         dest: /etc/keepalived/keepalived.conf
         mode: '0644'
         content: |
+          global_defs {
+              enable_script_security
+              script_user root
+          }
+
           vrrp_script check_squid {
-              script "killall -0 squid"
-              interval 2
+              script "/usr/local/bin/check_local_port 3128"
+              interval 1
               weight 2
           }
 
           vrrp_instance VI_SQUID {
               state {{ keepalived_role }}
-              interface {{ network_interface }}
+              interface {{ iface }}
               virtual_router_id 52
               priority {{ keepalived_priority }}
               advert_int 1
 
               authentication {
                   auth_type PASS
-                  auth_pass "FelCloudSquidVRRPKey"
+                  auth_pass {{ vrrp_auth_pass }}
               }
 
               unicast_src_ip {{ ansible_host }}
@@ -107,7 +132,7 @@
               }
 
               virtual_ipaddress {
-                  {{ squid_vip }}/24 dev {{ network_interface }}
+                  {{ squid_vip }}/24 dev {{ iface }}
               }
 
               track_script {

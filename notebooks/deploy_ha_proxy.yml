@@ -4,75 +4,22 @@
   become: true
 
   vars:
-    # -------------------------------------------------------------------------
-    # 1. HAProxy Configuration (geerlingguy.haproxy)
-    # -------------------------------------------------------------------------
-    haproxy_global_vars:
-      - "log /dev/log local0"
-      - "log /dev/log local1 notice"
-      - "chroot /var/lib/haproxy"
-      - "user haproxy"
-      - "group haproxy"
-      - "daemon"
-      - "maxconn 4096"
+    iface: "{{ ansible_default_ipv4.interface }}"
+    squid_proxy_url: "http://{{ squid_vip }}:3128"
+    # Keepalived only uses the first 8 characters of a PASS secret.
+    vrrp_auth_pass: "FelHaPrx"
 
-    haproxy_frontends:
-          - name: 'http-in'
-            address: '*:80'
-            mode: 'http'
-            options:
-              - 'redirect scheme https code 301 if !{ ssl_fc }'
+  pre_tasks:
+    # These nodes have no direct internet egress (security group), so apt goes
+    # through the Squid VIP. deploy_ha_squid.yml must have run first.
+    - name: Send apt through the Squid forward proxy
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/95proxy
+        mode: '0644'
+        content: |
+          Acquire::http::Proxy "{{ squid_proxy_url }}";
+          Acquire::https::Proxy "{{ squid_proxy_url }}";
 
-          - name: 'https-in'
-            address: '*:443 ssl crt /etc/haproxy/certs/haproxy.pem'
-            mode: 'http'
-            options:
-              - 'default_backend app-backend'
-
-    haproxy_backends:
-      - name: 'app-backend'
-        mode: 'http'
-        balance: 'roundrobin'
-        options:
-          - 'option httpchk GET /health'
-        servers:
-          - name: 'app1'
-            address: '10.0.1.20:80 check'
-          - name: 'app2'
-            address: '10.0.1.21:80 check'
-
-    # -------------------------------------------------------------------------
-    # 2. Keepalived Configuration (evrardjp.keepalived)
-    # -------------------------------------------------------------------------
-    keepalived_sync_groups:
-      VG1:
-        instances:
-          - VI_1
-
-    keepalived_instances:
-      VI_1:
-        interface: "{{ network_interface }}"
-        state: "{{ keepalived_role }}"
-        virtual_router_id: 51
-        priority: "{{ keepalived_priority }}"
-        authentication:
-          auth_type: PASS
-          auth_pass: "FelCloudSecureVRRPKey"
-        unicast_src_ip: "{{ ansible_host }}"
-        unicast_peers:
-          - "{{ peer_ip }}"
-        vips:
-          - "{{ cluster_vip }}/24 dev {{ network_interface }}"
-        track_scripts:
-          - check_haproxy
-
-    keepalived_scripts:
-      check_haproxy:
-        script: "killall -0 haproxy"
-        interval: 2
-        weight: 2
-  pre_tasks:  
-    # 1. Enable Non-Local IP Binding
     - name: Allow services to bind to non-local Virtual IPs
       ansible.posix.sysctl:
         name: net.ipv4.ip_nonlocal_bind
@@ -80,21 +27,15 @@
         state: present
         reload: true
 
-    # 2. Ensure haproxy group & user exist prior to cert generation
-    - name: Ensure haproxy system group exists
-      ansible.builtin.group:
-        name: haproxy
+  tasks:
+    - name: Install HAProxy and Keepalived
+      ansible.builtin.apt:
+        name:
+          - haproxy
+          - keepalived
         state: present
-        system: true
+        update_cache: true
 
-    - name: Ensure haproxy system user exists
-      ansible.builtin.user:
-        name: haproxy
-        group: haproxy
-        system: true
-        shell: /usr/sbin/nologin
-
-    # 3. Prepare SSL Certificate directory
     - name: Ensure HAProxy certs directory exists
       ansible.builtin.file:
         path: /etc/haproxy/certs
@@ -103,8 +44,7 @@
         group: haproxy
         mode: '0750'
 
-    # 4. Create OpenSSL Self-Signed SSL Certificate bundle
-    - name: Generate SSL Key and Certificate
+    - name: Generate self-signed SSL key and certificate
       ansible.builtin.command: >
         openssl req -x509 -nodes -days 365 -newkey rsa:2048
         -keyout /etc/haproxy/certs/haproxy.key
@@ -125,7 +65,120 @@
         owner: haproxy
         group: haproxy
         mode: '0600'
-  # Roles execute sequentially: HAProxy first, then Keepalived failover daemon
-  roles:
-    - role: geerlingguy.haproxy
-    - role: evrardjp.keepalived
+
+    # validate: a config that does not pass `haproxy -c` is never installed.
+    - name: Configure HAProxy
+      ansible.builtin.copy:
+        dest: /etc/haproxy/haproxy.cfg
+        mode: '0644'
+        validate: haproxy -c -f %s
+        content: |
+          global
+              log /dev/log local0
+              log /dev/log local1 notice
+              chroot /var/lib/haproxy
+              stats socket /run/haproxy/admin.sock mode 660 level admin
+              user haproxy
+              group haproxy
+              daemon
+              maxconn 4096
+
+          defaults
+              log global
+              mode http
+              option httplog
+              timeout connect 5s
+              timeout client 30s
+              timeout server 30s
+
+          frontend http-in
+              bind *:80
+              http-request redirect scheme https code 301
+
+          frontend https-in
+              bind *:443 ssl crt /etc/haproxy/certs/haproxy.pem
+              default_backend app-backend
+
+          backend app-backend
+              balance roundrobin
+              option httpchk GET /
+              server app1 {{ app_backend_ip }}:80 check
+      notify: Reload HAProxy
+
+    # Health = "accepts a TCP connection on localhost", not "process exists": a stopping
+    # or hung service keeps its process but refuses connections.
+    - name: Install the Keepalived port health check
+      ansible.builtin.copy:
+        dest: /usr/local/bin/check_local_port
+        mode: '0755'
+        owner: root
+        group: root
+        content: |
+          #!/bin/bash
+          # Exit 0 if something accepts TCP connections on 127.0.0.1:$1 within 1 second.
+          exec timeout 1 bash -c "</dev/tcp/127.0.0.1/$1"
+
+    - name: Configure Keepalived for the HAProxy VIP
+      ansible.builtin.copy:
+        dest: /etc/keepalived/keepalived.conf
+        mode: '0644'
+        content: |
+          global_defs {
+              enable_script_security
+              script_user root
+          }
+
+          # A dead HAProxy moves the VIP, not just a dead VM: the healthy node gets
+          # +2 priority, so MASTER (101+2) drops below BACKUP (100+2) when it fails.
+          vrrp_script check_haproxy {
+              script "/usr/local/bin/check_local_port 443"
+              interval 1
+              weight 2
+          }
+
+          vrrp_instance VI_HAPROXY {
+              state {{ keepalived_role }}
+              interface {{ iface }}
+              virtual_router_id 51
+              priority {{ keepalived_priority }}
+              advert_int 1
+
+              authentication {
+                  auth_type PASS
+                  auth_pass {{ vrrp_auth_pass }}
+              }
+
+              unicast_src_ip {{ ansible_host }}
+              unicast_peer {
+                  {{ peer_ip }}
+              }
+
+              virtual_ipaddress {
+                  {{ haproxy_vip }}/24 dev {{ iface }}
+              }
+
+              track_script {
+                  check_haproxy
+              }
+          }
+      notify: Restart Keepalived
+
+    - name: Enable and start HAProxy and Keepalived
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - haproxy
+        - keepalived
+
+  handlers:
+    - name: Reload HAProxy
+      ansible.builtin.service:
+        name: haproxy
+        state: reloaded
+
+    - name: Restart Keepalived
+      ansible.builtin.service:
+        name: keepalived
+        state: restarted

@@ -14,6 +14,8 @@ from resources.ports import (
     vip_haproxy_port,
     vip_squid_port,
     allocated_fip_bastian,
+    client_vm_port,
+    squid_egress_fips,
 )
 from resources.keypairs import keypair
 
@@ -52,6 +54,7 @@ inventory_file = pulumi.Output.all(
     squid_backup_ip,
     haproxy_vip,
     squid_vip,
+    client_vm_port.all_fixed_ips[0],
 ).apply(generate_inventory_file)
 
 _ = keypair.private_key.apply(save_private_key)
@@ -63,6 +66,9 @@ _ = keypair.private_key.apply(save_private_key)
 # -----------------------------------------------------------------------------
 pulumi.export("private_key_pem", keypair.private_key)
 pulumi.export("public_floating_ip", allocated_fip.address)
+pulumi.export("bastion_floating_ip", allocated_fip_bastian.address)
+pulumi.export("client_vm_ip", client_vm_port.all_fixed_ips[0])
+pulumi.export("squid_egress_ips", {node: fip.address for node, fip in squid_egress_fips.items()})
 pulumi.export("haproxy_cluster_vip", haproxy_vip)
 pulumi.export("squid_cluster_vip", squid_vip)
 
@@ -70,4 +76,3 @@ pulumi.export("haproxy_master_ip", haproxy_master_ip)
 pulumi.export("haproxy_backup_ip", haproxy_backup_ip)
 pulumi.export("squid_master_ip", squid_master_ip)
 pulumi.export("squid_backup_ip", squid_backup_ip)
-pulumi.export("private_key_pem", keypair.private_key)

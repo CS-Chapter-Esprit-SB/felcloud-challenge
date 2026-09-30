@@ -13,10 +13,11 @@
         delay: 5
         timeout: 300
 
-# 2. Deploy Ingress HAProxy Active/Passive Cluster
-- name: Deploy HAProxy Ingress
-  import_playbook: deploy_ha_proxy.yml
-
-# 3. Deploy Outbound Squid Forward Proxy Cluster
+# 2. Deploy Outbound Squid Forward Proxy Cluster first: every other node reaches
+#    the internet (apt included) only through the Squid VIP.
 - name: Deploy Squid Outbound Egress Proxy
   import_playbook: deploy_ha_squid.yml
+
+# 3. Deploy Ingress HAProxy Active/Passive Cluster
+- name: Deploy HAProxy Ingress
+  import_playbook: deploy_ha_proxy.yml
