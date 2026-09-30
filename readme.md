@@ -50,7 +50,7 @@ pulumi stack select dev || pulumi stack init dev
 pulumi install
 #authenticate with ur github account
 ```
-
+k
 ### Preview & Deploy
 
 Run Pulumi to provision networks, security groups, ports, and compute instances:

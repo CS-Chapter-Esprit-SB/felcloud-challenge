@@ -18,6 +18,7 @@ inbound_subnet = openstack.networking.Subnet(
     cidr="10.0.1.0/24",
     ip_version=4,
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
+    enable_dhcp=True,
 )
 
 outbound_net = openstack.networking.Network("outbound-network", name="net-outbound-proxy")
@@ -29,6 +30,7 @@ outbound_subnet = openstack.networking.Subnet(
     cidr="10.0.2.0/24",
     ip_version=4,
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
+    enable_dhcp=False,
 )
 
 # -----------------------------------------------------------------------------
@@ -39,7 +41,7 @@ router = openstack.networking.Router(
     name="router-gateway",
     admin_state_up=True,
     external_network_id=ext_net.id,
-    #enable_snat=True,
+
 )
 
 router_interface_inbound = openstack.networking.RouterInterface(

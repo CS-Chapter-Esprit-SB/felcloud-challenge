@@ -11,8 +11,13 @@ from .network import (
     outbound_subnet,
     router_interface_inbound,
 )
-from .security_groups import secgroup_fwd_proxy, secgroup_haproxy
+from .security_groups import (
+    secgroup_fwd_proxy, 
+    secgroup_haproxy,
+    secgroup_bastion,
+    secgroup_client_vm
 
+) 
 
 # -----------------------------------------------------------------------------
 # 1. HAProxy Active/Passive Cluster Ports & VIP
@@ -128,18 +133,50 @@ squid_backup_port = openstack.networking.Port(
     ],
 )
 
+bastion_port = openstack.networking.Port(
+    "bastion-port",
+    name="port-bastion",
+    network_id=inbound_subnet.network_id,
+    fixed_ips=[
+        openstack.networking.PortFixedIpArgs(
+            subnet_id=inbound_subnet.id,
+            ip_address="10.0.1.254",  # Fixed private management IP
+        )
+    ],
+    security_group_ids=[secgroup_bastion.id],
+)
+client_vm_port = openstack.networking.Port(
+    "client-vm-port",
+    name="port-client-vm",
+    network_id=outbound_subnet.network_id,  # Point to outbound network
+    fixed_ips=[
+        openstack.networking.PortFixedIpArgs(
+            subnet_id=outbound_subnet.id,   # Point to outbound subnet
+        )
+    ],
+    security_group_ids=[secgroup_client_vm.id],
+)
+
+
 # -----------------------------------------------------------------------------
 # Floating IP (inbound traffic only)
 
 
 allocated_fip = create_floating_ip("haproxy")
 
-# Neutron refuses to bind a floating IP to a port whose subnet has no path to the
-# external network, so the association must wait for the router interface on the
-# inbound subnet. Pulumi cannot infer that ordering from the arguments alone.
 fip_associate_haproxy = openstack.networking.FloatingIpAssociate(
     "fip-associate-haproxy",
     floating_ip=allocated_fip.address,
     port_id=vip_haproxy_port.id,
     opts=pulumi.ResourceOptions(depends_on=[router_interface_inbound]),
 )
+
+allocated_fip_bastian = create_floating_ip("bastion")
+
+fip_associate_bastion = openstack.networking.FloatingIpAssociate(
+    "fip-bastion-associate",
+    floating_ip=allocated_fip_bastian.address,
+    port_id=bastion_port.id,
+
+)
+

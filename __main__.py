@@ -3,8 +3,7 @@ from pathlib import Path
 import pulumi
 #import pulumi_command as command
 from resources.compute import create
-from resources.bastion import create_bastion
-from resources.helpers import create_floating_ip,generate_inventory_file , save_private_key
+from resources.helpers import generate_inventory_file , save_private_key
 
 from resources.ports import (
     allocated_fip,
@@ -14,6 +13,7 @@ from resources.ports import (
     squid_primary_port,
     vip_haproxy_port,
     vip_squid_port,
+    allocated_fip_bastian,
 )
 from resources.keypairs import keypair
 
@@ -21,13 +21,12 @@ from resources.keypairs import keypair
 NOTEBOOK_ROOT = Path(__file__).parent / "notebooks"
 ## bastion
 
-bastion_pip = create_floating_ip("bastion")
-bastion_vm = create_bastion(bastion_pip)
+
 
 # -----------------------------------------------------------------------------
 # 1. Provision Infrastructure Instances
 # -----------------------------------------------------------------------------
-haproxy_master, haproxy_backup, squid_master, squid_backup = create()
+haproxy_master, haproxy_backup, squid_master, squid_backup, bastion_vm ,client_vm = create()
 
 # Extract Dynamic IPs from Port Resources
 haproxy_master_ip = haproxy_primary_port.fixed_ips[0].ip_address
@@ -46,7 +45,7 @@ squid_vip = vip_squid_port.fixed_ips[0].ip_address
 
 
 inventory_file = pulumi.Output.all(
-    bastion_pip.address,
+    allocated_fip_bastian.address,
     haproxy_master_ip,
     haproxy_backup_ip,
     squid_master_ip,
@@ -57,29 +56,6 @@ inventory_file = pulumi.Output.all(
 
 _ = keypair.private_key.apply(save_private_key)
 
-
-
-
-# -----------------------------------------------------------------------------
-# 3. Execute Ansible Playbooks Automatically via Local Command
-# -----------------------------------------------------------------------------
-
-# Execute HAProxy Playbook
-# run_ansible = command.local.Command(
-#     "run-ansible-cluster",
-#     create=inventory_file.apply(
-#         lambda inv: f"uv run ansible-playbook -i {inv} {NOTEBOOK_ROOT}/site.yml"
-#     ),
-#     opts=pulumi.ResourceOptions(
-#         depends_on=[
-#             bastion_vm,
-#             haproxy_master,
-#             haproxy_backup,
-#             squid_master,
-#             squid_backup,
-#         ]
-#     ),
-# )
 
 
 # -----------------------------------------------------------------------------

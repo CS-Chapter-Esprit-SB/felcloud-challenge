@@ -9,10 +9,14 @@ from .ports import (
     haproxy_primary_port,
     squid_backup_port,
     squid_primary_port,
+    bastion_port,
+    client_vm_port,
 )
 
 
 def create() -> tuple[
+    openstack.compute.Instance,
+    openstack.compute.Instance,
     openstack.compute.Instance,
     openstack.compute.Instance,
     openstack.compute.Instance,
@@ -76,4 +80,35 @@ def create() -> tuple[
         opts=pulumi.ResourceOptions(depends_on=[keypair]),
     )
 
-    return haproxy_master, haproxy_backup, squid_master, squid_backup
+    bastion_vm = openstack.compute.Instance(
+        "bastion-instance",
+        name="vm-bastion",
+        image_id=image.id,
+        flavor_id=flavor.id,
+        networks=[openstack.compute.InstanceNetworkArgs(port=bastion_port.id)],
+        opts=pulumi.ResourceOptions(
+            custom_timeouts=pulumi.CustomTimeouts(
+                create="15m",
+                update="15m",
+                delete="15m",
+            )
+        ),
+        key_pair=keypair.name,
+    )
+
+    client_vm = openstack.compute.Instance(
+        "client-vm-instance",
+        name="vm-client",
+        image_id=image.id,
+        flavor_id=flavor.id,
+        networks=[openstack.compute.InstanceNetworkArgs(port=client_vm_port.id)],
+        opts=pulumi.ResourceOptions(
+            custom_timeouts=pulumi.CustomTimeouts(
+                create="15m",
+                update="15m",
+                delete="15m",
+            )
+        ),
+        key_pair=keypair.name,
+    )
+    return haproxy_master, haproxy_backup, squid_master, squid_backup, bastion_vm,client_vm
