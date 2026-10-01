@@ -1,0 +1,177 @@
+---
+- name: Deploy High-Availability Squid Forward Proxy Cluster
+  hosts: squid_nodes
+  become: true
+
+  vars:
+    squid_port: 3128
+    vrrp_auth_pass: "FelSqd52"      # max 8 chars; move to ansible-vault
+    dns_servers: ["8.8.8.8", "1.1.1.1"]
+    allowed_internal_cidrs:
+      - "10.0.0.0/16"
+    allowed_domains:
+      - ".github.com"
+      - ".githubusercontent.com"
+      - ".python.org"
+      - ".pypi.org"
+      - ".pythonhosted.org"
+      - ".ubuntu.com"
+
+  pre_tasks:
+    # 1. Network: bastion as permanent default gateway, explicit DNS
+    - name: Stop cloud-init from managing the network
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+        mode: "0644"
+        content: |
+          network: {config: disabled}
+
+    - name: Write static netplan using the bastion as gateway
+      ansible.builtin.copy:
+        dest: /etc/netplan/01-squid.yaml
+        mode: "0600"
+        content: |
+          network:
+            version: 2
+            ethernets:
+              {{ network_interface }}:
+                dhcp4: false
+                mtu: {{ ansible_facts[network_interface]['mtu'] }}
+                addresses:
+                  - {{ ansible_host }}/{{ subnet_cidr.split('/')[1] }}
+                routes:
+                  - to: default
+                    via: {{ bastion_gateway }}
+                nameservers:
+                  addresses: {{ dns_servers }}
+      register: netplan_cfg
+
+    - name: Remove cloud-init generated netplan
+      ansible.builtin.file:
+        path: /etc/netplan/50-cloud-init.yaml
+        state: absent
+      register: netplan_cloudinit
+
+    - name: Apply netplan
+      ansible.builtin.command: netplan apply
+      when: netplan_cfg.changed or netplan_cloudinit.changed
+
+    - name: Reconnect after network change
+      ansible.builtin.meta: reset_connection
+
+    - name: Wait for the node to come back
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    # 2. Packages
+    - name: Enable ip_nonlocal_bind
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_nonlocal_bind
+        value: "1"
+        state: present
+        reload: true
+
+    - name: Install Squid and Keepalived
+      ansible.builtin.apt:
+        name:
+          - squid
+          - keepalived
+        state: present
+        update_cache: true
+      tags: install
+
+  tasks:
+    - name: Create Squid allowed domains list
+      ansible.builtin.copy:
+        dest: /etc/squid/allowed_domains.acl
+        mode: "0644"
+        content: |
+          {% for domain in allowed_domains %}
+          {{ domain }}
+          {% endfor %}
+      notify: Reload Squid
+
+    - name: Configure /etc/squid/squid.conf
+      ansible.builtin.copy:
+        dest: /etc/squid/squid.conf
+        mode: "0644"
+        validate: squid -k parse -f %s
+        content: |
+          http_port {{ squid_port }}
+
+          acl SSL_ports port 443
+          acl Safe_ports port 80 443
+          acl CONNECT method CONNECT
+
+          {% for cidr in allowed_internal_cidrs %}
+          acl local_net src {{ cidr }}
+          {% endfor %}
+          acl allowed_sites dstdomain "/etc/squid/allowed_domains.acl"
+
+          http_access deny !Safe_ports
+          http_access deny CONNECT !SSL_ports
+          http_access allow local_net allowed_sites
+          http_access deny all
+
+          via off
+          forwarded_for delete
+
+          cache_dir ufs /var/spool/squid 100 16 256
+          coredump_dir /var/spool/squid
+      notify: Restart Squid
+
+    - name: Configure Keepalived for Squid VIP
+      ansible.builtin.copy:
+        dest: /etc/keepalived/keepalived.conf
+        mode: "0644"
+        content: |
+          vrrp_script check_squid {
+              script "/usr/bin/pgrep -x squid"
+              interval 2
+              weight 2
+          }
+
+          vrrp_instance VI_SQUID {
+              state {{ keepalived_role }}
+              interface {{ network_interface }}
+              virtual_router_id 52
+              priority {{ keepalived_priority }}
+              advert_int 1
+
+              authentication {
+                  auth_type PASS
+                  auth_pass {{ vrrp_auth_pass }}
+              }
+
+              unicast_src_ip {{ ansible_host }}
+              unicast_peer {
+                  {{ peer_ip }}
+              }
+
+              virtual_ipaddress {
+                  {{ squid_vip }}/{{ subnet_cidr.split('/')[1] }} dev {{ network_interface }}
+              }
+
+              track_script {
+                  check_squid
+              }
+          }
+      notify: Restart Keepalived
+
+  handlers:
+    - name: Reload Squid
+      ansible.builtin.service:
+        name: squid
+        state: reloaded
+
+    - name: Restart Squid
+      ansible.builtin.service:
+        name: squid
+        state: restarted
+        enabled: true
+
+    - name: Restart Keepalived
+      ansible.builtin.service:
+        name: keepalived
+        state: restarted
+        enabled: true
