@@ -1,7 +1,7 @@
 """Networks, subnets and the router connecting them to the external provider network."""
 import pulumi_openstack as openstack
 
-from .config import external_network_name
+from .config import external_network_name,inbound_gateway_ip,outbound_gateway_ip
 
 # External provider network
 ext_net = openstack.networking.get_network(name=external_network_name)
@@ -11,17 +11,24 @@ ext_net = openstack.networking.get_network(name=external_network_name)
 # -----------------------------------------------------------------------------
 inbound_net = openstack.networking.Network("inbound-network", name="net-inbound-proxy")
 
+
+outbound_net = openstack.networking.Network("outbound-network", name="net-outbound-proxy")
+
+
+
 inbound_subnet = openstack.networking.Subnet(
     "inbound-subnet",
     name="subnet-inbound-proxy",
     network_id=inbound_net.id,
     cidr="10.0.1.0/24",
     ip_version=4,
+    gateway_ip=inbound_gateway_ip,
+    allocation_pools=[
+        openstack.networking.SubnetAllocationPoolArgs(start="10.0.1.2", end="10.0.1.99")
+    ],
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
     enable_dhcp=True,
 )
-
-outbound_net = openstack.networking.Network("outbound-network", name="net-outbound-proxy")
 
 outbound_subnet = openstack.networking.Subnet(
     "outbound-subnet",
@@ -29,6 +36,10 @@ outbound_subnet = openstack.networking.Subnet(
     network_id=outbound_net.id,
     cidr="10.0.2.0/24",
     ip_version=4,
+    gateway_ip=outbound_gateway_ip,
+    allocation_pools=[
+        openstack.networking.SubnetAllocationPoolArgs(start="10.0.2.2", end="10.0.2.99")
+    ],
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
     enable_dhcp=True,
 )

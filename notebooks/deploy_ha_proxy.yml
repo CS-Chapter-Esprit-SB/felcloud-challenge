@@ -8,27 +8,7 @@
     dns_servers: ["8.8.8.8", "1.1.1.1"]
     cluster_vip: "{{ haproxy_vip }}"    # inventory defines haproxy_vip, not cluster_vip
     vrrp_auth_pass: "FelHAP51"          # max 8 chars; move to ansible-vault
-
-    # --- geerlingguy.haproxy ---
-    haproxy_global_vars:
-      - "log /dev/log local0"
-      - "log /dev/log local1 notice"
-      - "daemon"
-      - "maxconn 4096"
-
-    haproxy_frontend_name: "https-in"
-    haproxy_frontend_bind_address: "*"
-    haproxy_frontend_port: 443
-    haproxy_frontend_mode: "http"
-
-    haproxy_backend_name: "app-backend"
-    haproxy_backend_mode: "http"
-    haproxy_backend_balance_method: "roundrobin"
-    haproxy_backend_httpchk: "GET /health"
-
-    haproxy_backend_servers:
-      - name: client
-        address: "10.0.2.179:80"
+    internal_supernet: "10.0.0.0/16"
 
     keepalived_global_defs:
       - "enable_script_security"
@@ -76,10 +56,22 @@
                       use-routes: false
                       use-dns: false
                     routes:
+                      - to: {{ internal_supernet }}
+                        via: {{ neutron_router_ip }}
                       - to: default
                         via: {{ bastion_gateway }}
                       - to: 169.254.169.254/32
-                        via: 10.0.1.2
+                        via: {{ neutron_router_ip | regex_replace('\.1$', '.2') }}
+                      - to: {{ subnet_cidr }}
+                        scope: link
+                        table: 100
+                      - to: default
+                        via: {{ neutron_router_ip }}
+                        table: 100
+                    routing-policy:
+                      - from: {{ cluster_vip }}/32
+                        table: 100
+                        priority: 100
                     nameservers:
                       addresses: {{ dns_servers }}
           register: gw_cfg
@@ -107,7 +99,12 @@
         value: '1'
         state: present
         reload: true
-
+    - name: Install HAProxy
+      ansible.builtin.apt:
+        name: haproxy
+        state: present
+        update_cache: true
+    
     - name: Install openssl
       ansible.builtin.apt:
         name: openssl
@@ -160,52 +157,36 @@
         mode: '0600'
 
   roles:
-    - role: geerlingguy.haproxy
     - role: evrardjp.keepalived
 
   tasks:
-    - name: Deploy custom HAProxy configuration
-      ansible.builtin.copy:
+    - name: Deploy host-to-backend map
+      ansible.builtin.template:
+        src: hosts.map.j2
+        dest: /etc/haproxy/hosts.map
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload HAProxy
+
+    - name: Deploy HAProxy configuration (validated before install)
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
         dest: /etc/haproxy/haproxy.cfg
         owner: root
         group: root
         mode: "0644"
-        content: |
-          global
-              log /dev/log local0
-              log /dev/log local1 notice
-              daemon
-              maxconn 4096
-
-          defaults
-              log global
-              mode http
-              option httplog
-              option dontlognull
-              timeout connect 5s
-              timeout client 50s
-              timeout server 50s
-
-          frontend http-in
-              bind *:80
-              mode http
-              redirect scheme https code 301
-
-          frontend https-in
-              bind *:443 ssl crt /etc/haproxy/certs/haproxy.pem
-              mode http
-              default_backend app-backend
-
-          backend app-backend
-              mode http
-              balance roundrobin
-              option forwardfor
-              option httpchk GET /
-              server client 10.0.2.179:80 check
-
         validate: "/usr/sbin/haproxy -c -f %s"
-    - name: Restart HAProxy
+      notify: Reload HAProxy
+
+    - name: Make sure HAProxy is enabled and running
       ansible.builtin.systemd:
         name: haproxy
-        state: restarted
         enabled: true
+        state: started
+
+  handlers:
+    - name: Reload HAProxy
+      ansible.builtin.systemd:
+        name: haproxy
+        state: reloaded

@@ -40,8 +40,25 @@ secgroup_client_vm = openstack.networking.SecGroup(
 # Public HTTPS
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Public HTTP (redirect to HTTPS)
+# -----------------------------------------------------------------------------
 rule_haproxy_https = openstack.networking.SecGroupRule(
-    "rule-haproxy-https",
+    "rule-haproxy-https",          # keep this name: it already exists in state as port 80
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=80,
+    port_range_max=80,
+    remote_ip_prefix="0.0.0.0/0",
+    security_group_id=secgroup_haproxy.id,
+)
+
+# -----------------------------------------------------------------------------
+# Public HTTPS
+# -----------------------------------------------------------------------------
+rule_haproxy_443 = openstack.networking.SecGroupRule(
+    "rule-haproxy-443",
     direction="ingress",
     ethertype="IPv4",
     protocol="tcp",

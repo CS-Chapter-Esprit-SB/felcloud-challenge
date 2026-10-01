@@ -1,2 +1,4 @@
 config:
   openstack:cloud: felcloud
+  felcloud-challenge:haproxy_fip_id: 45de1b2e-e053-47ea-bb4a-424ba4430f86
+  felcloud-challenge:bastion_fip_id: df22b34f-de05-406c-b3c7-1c688b8dbe56

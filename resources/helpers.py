@@ -4,7 +4,7 @@ from .config import external_network_name
 import pulumi_openstack as openstack
 import inspect
 
-
+from .config import external_network_name, inbound_gateway_ip, outbound_gateway_ip, backend_ip
 def generate_inventory_file(args: list[str]) -> None:
     (
         bastion_fip,
@@ -32,23 +32,27 @@ def generate_inventory_file(args: list[str]) -> None:
         [squid_nodes]
         squid-master ansible_host={s_master} keepalived_role=MASTER keepalived_priority=101 peer_ip={s_backup}
         squid-backup ansible_host={s_backup} keepalived_role=BACKUP keepalived_priority=100 peer_ip={s_master}
+        [client_nodes]
+        client-vm ansible_host={backend_ip}
 
         [internal_nodes:children]
         haproxy_nodes
         squid_nodes
-
-        [internal_nodes:vars]
-        ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ForwardAgent=yes -o ProxyJump=ubuntu@{bastion_fip}'
+        client_nodes
 
         [haproxy_nodes:vars]
         network_interface=ens3
         bastion_gateway={bastion_inbound_ip}
         subnet_cidr={inbound_cidr}
+        neutron_router_ip={inbound_gateway_ip}
+        backend_ip={backend_ip}
+
 
         [squid_nodes:vars]
         network_interface=ens3
         bastion_gateway={bastion_outbound_ip}
         subnet_cidr={outbound_cidr}
+        neutron_router_ip={outbound_gateway_ip}
 
         [bastion:vars]
         bastion_inbound_ip={bastion_inbound_ip}
@@ -70,14 +74,9 @@ def generate_inventory_file(args: list[str]) -> None:
     with open("inventory.ini", "w", encoding="utf-8") as f:
         _ = f.write(inventory_content)
 
-def create_floating_ip(name: str)-> openstack.networking.FloatingIp:
-
-    ext_network = openstack.networking.get_network(name=external_network_name)
-    ext_subnets = openstack.networking.get_subnet_ids_v2(network_id=ext_network.id)
-    allocated_fip = openstack.networking.FloatingIp(f"floatip_{name}",
-        pool=ext_network.name,
-        subnet_ids=ext_subnets.ids)
-    return allocated_fip
+def get_reserved_floating_ip(name: str, fip_id: str) -> openstack.networking.FloatingIp:
+    """Adopt a pre-reserved floating IP by ID. Pulumi never creates or deletes it."""
+    return openstack.networking.FloatingIp.get(f"floatip_{name}", id=fip_id)
 
 def save_private_key(key_content: str) -> None:
     if not key_content:

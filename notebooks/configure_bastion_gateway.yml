@@ -8,6 +8,7 @@
     internal_if: ens4
     external_if: ens3
     harden_input: true      # replaces sg-bastion once port security is off
+    internal_supernet: "10.0.0.0/16"
 
   tasks:
     - name: Enable IPv4 forwarding
@@ -48,75 +49,80 @@
         - net.ipv4.conf.all.send_redirects
         - net.ipv4.conf.default.send_redirects
         - "net.ipv4.conf.{{ ext_if }}.send_redirects"
+    
+    - name: Flush old FORWARD rules
+      ansible.builtin.iptables:
+        chain: FORWARD
+        flush: true
+
+    - name: Flush old NAT POSTROUTING rules
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        flush: true
 
     # ---------------------------------------------------------------
     # NAT
     # ---------------------------------------------------------------
-    - name: Masquerade the outbound subnet to the internet
+    - name: Masquerade internal subnets to the PUBLIC internet only
       ansible.builtin.iptables:
         table: nat
         chain: POSTROUTING
-        source: "{{ outbound_cidr }}"
+        source: "{{ item }}"
+        destination: "! {{ internal_supernet }}"
         out_interface: "{{ ext_if }}"
         jump: MASQUERADE
-        comment: "NAT outbound subnet to the internet"
-      notify: Save iptables rules
-
-    - name: Masquerade the inbound subnet to the internet
-      ansible.builtin.iptables:
-        table: nat
-        chain: POSTROUTING
-        source: "{{ inbound_cidr }}"
-        destination: "! {{ inbound_cidr }}"
-        out_interface: "{{ ext_if }}"
-        jump: MASQUERADE
-        comment: "NAT inbound subnet to the internet"
+        comment: "egress NAT {{ item }}"
+      loop: ["{{ outbound_cidr }}", "{{ inbound_cidr }}"]
       notify: Save iptables rules
 
     # ---------------------------------------------------------------
     # FORWARD
     # ---------------------------------------------------------------
-    - name: Allow outbound subnet to the internet
+    - name: FORWARD - never route internal-to-internal traffic
+      ansible.builtin.iptables:
+        chain: FORWARD
+        source: "{{ internal_supernet }}"
+        destination: "{{ internal_supernet }}"
+        jump: DROP
+        comment: "internal routing belongs to Neutron"
+      notify: Save iptables rules
+
+    - name: FORWARD - outbound subnet to the internet
       ansible.builtin.iptables:
         chain: FORWARD
         in_interface: "{{ internal_if }}"
         out_interface: "{{ ext_if }}"
         source: "{{ outbound_cidr }}"
+        destination: "! {{ internal_supernet }}"
         jump: ACCEPT
-        comment: "Outbound subnet to internet"
+        comment: "outbound subnet egress"
       notify: Save iptables rules
 
-    - name: Allow return traffic to the outbound subnet
-      ansible.builtin.iptables:
-        chain: FORWARD
-        in_interface: "{{ ext_if }}"
-        out_interface: "{{ internal_if }}"
-        ctstate: [RELATED, ESTABLISHED]
-        jump: ACCEPT
-        comment: "Established return traffic"
-      notify: Save iptables rules
-
-    - name: Allow inbound subnet out through the same interface
+    - name: FORWARD - inbound subnet to the internet (hairpin on ext_if)
       ansible.builtin.iptables:
         chain: FORWARD
         in_interface: "{{ ext_if }}"
         out_interface: "{{ ext_if }}"
         source: "{{ inbound_cidr }}"
+        destination: "! {{ internal_supernet }}"
         jump: ACCEPT
-        comment: "Inbound subnet to internet (hairpin)"
+        comment: "inbound subnet egress (hairpin)"
       notify: Save iptables rules
 
-    - name: Allow return traffic back to the inbound subnet
+    - name: FORWARD - return traffic (both directions)
       ansible.builtin.iptables:
         chain: FORWARD
-        in_interface: "{{ ext_if }}"
-        out_interface: "{{ ext_if }}"
-        destination: "{{ inbound_cidr }}"
         ctstate: [RELATED, ESTABLISHED]
         jump: ACCEPT
-        comment: "Return traffic (hairpin)"
+        comment: "established return traffic"
       notify: Save iptables rules
 
+    - name: FORWARD - default policy DROP
+      ansible.builtin.iptables:
+        chain: FORWARD
+        policy: DROP
+      notify: Save iptables rules
     # ---------------------------------------------------------------
     # INPUT firewall (replaces sg-bastion when port security is off)
     # Rules are added BEFORE the policy changes to DROP.

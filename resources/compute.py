@@ -45,8 +45,10 @@ write_files:
           ens3:
             dhcp4: true
           ens4:
-            dhcp4: false
-            addresses: [10.0.2.254/24]
+            dhcp4: true
+            dhcp4-overrides:
+              use-routes: false
+              use-dns: false
 
 runcmd:
   - rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/99-bastion.yaml

@@ -2,8 +2,8 @@
 import pulumi
 import pulumi_openstack as openstack
 
-from .config import  ha_proxy_pool, squid_proxy_pool
-from .helpers import create_floating_ip
+from .config import  ha_proxy_pool, squid_proxy_pool,backend_ip, haproxy_fip_id, bastion_fip_id
+from .helpers import get_reserved_floating_ip
 from .network import (
     inbound_net,
     inbound_subnet,
@@ -14,7 +14,6 @@ from .network import (
 from .security_groups import (
     secgroup_fwd_proxy, 
     secgroup_haproxy,
-    secgroup_bastion,
     secgroup_client_vm
 
 ) 
@@ -166,22 +165,22 @@ bastion_port_outbound = openstack.networking.Port(
 client_vm_port = openstack.networking.Port(
     "client-vm-port",
     name="port-client-vm",
-    network_id=outbound_subnet.network_id,  # Point to outbound network
+    network_id=outbound_subnet.network_id,
     fixed_ips=[
         openstack.networking.PortFixedIpArgs(
-            subnet_id=outbound_subnet.id,   # Point to outbound subnet
+            subnet_id=outbound_subnet.id,
+            ip_address=backend_ip,
         )
     ],
     security_group_ids=[secgroup_client_vm.id],
 )
 
 
-
 # -----------------------------------------------------------------------------
 # Floating IP (inbound traffic only)
 
 
-allocated_fip = create_floating_ip("haproxy")
+allocated_fip = get_reserved_floating_ip("haproxy", haproxy_fip_id)
 
 fip_associate_haproxy = openstack.networking.FloatingIpAssociate(
     "fip-associate-haproxy",
@@ -192,16 +191,7 @@ fip_associate_haproxy = openstack.networking.FloatingIpAssociate(
 
 
 
-allocated_fip_squid = create_floating_ip("squid")
-
-fip_associate_squid = openstack.networking.FloatingIpAssociate(
-    "fip-associate-squid",
-    floating_ip=allocated_fip_squid.address,
-    port_id=vip_squid_port.id,
-    opts=pulumi.ResourceOptions(depends_on=[router_interface_inbound]),
-)
-
-allocated_fip_bastian = create_floating_ip("bastion")
+allocated_fip_bastian = get_reserved_floating_ip("bastion", bastion_fip_id)
 
 fip_associate_bastion = openstack.networking.FloatingIpAssociate(
     "fip-bastion-associate",

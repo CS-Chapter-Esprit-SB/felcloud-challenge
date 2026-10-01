@@ -16,6 +16,7 @@
       - ".pypi.org"
       - ".pythonhosted.org"
       - ".ubuntu.com"
+    internal_supernet: "10.0.0.0/16"
 
   pre_tasks:
     # 1. Network: bastion as permanent default gateway, explicit DNS
@@ -40,6 +41,8 @@
                 addresses:
                   - {{ ansible_host }}/{{ subnet_cidr.split('/')[1] }}
                 routes:
+                  - to: {{ internal_supernet }}
+                    via: {{ neutron_router_ip }}
                   - to: default
                     via: {{ bastion_gateway }}
                 nameservers:
