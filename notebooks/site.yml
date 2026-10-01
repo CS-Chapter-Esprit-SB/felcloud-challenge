@@ -3,20 +3,18 @@
 # Master Orchestration Playbook: site.yml
 # =============================================================================
 
-# 1. Global Pre-checks / Wait for SSH through Bastion
-- name: Verify cluster connectivity via Bastion host
+- name: Verify cluster connectivity
   hosts: all
   gather_facts: false
+
   tasks:
-    - name: Wait for SSH port 22 on all nodes to accept connections
+    - name: Wait for SSH connection
       ansible.builtin.wait_for_connection:
         delay: 5
         timeout: 300
 
-# 2. Deploy Ingress HAProxy Active/Passive Cluster
-- name: Deploy HAProxy Ingress
-  import_playbook: deploy_ha_proxy.yml
+- import_playbook: deploy_bastion.yml
 
-# 3. Deploy Outbound Squid Forward Proxy Cluster
-- name: Deploy Squid Outbound Egress Proxy
-  import_playbook: deploy_ha_squid.yml
+- import_playbook: deploy_squid.yml
+
+- import_playbook: deploy_ha_proxy.yml
