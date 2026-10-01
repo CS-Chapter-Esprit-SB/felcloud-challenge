@@ -177,6 +177,7 @@
         group: root
         mode: "0644"
         validate: "/usr/sbin/haproxy -c -f %s"
+        
       notify: Reload HAProxy
 
     - name: Make sure HAProxy is enabled and running
