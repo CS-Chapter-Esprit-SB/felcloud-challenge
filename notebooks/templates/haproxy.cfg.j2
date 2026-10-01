@@ -1,0 +1,38 @@
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    user haproxy
+    group haproxy
+    daemon
+    maxconn 4096
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+
+defaults
+    log global
+    mode http
+    option httplog
+    option dontlognull
+    timeout connect 5s
+    timeout client 50s
+    timeout server 50s
+
+frontend http-in
+    bind *:80
+    redirect scheme https code 301
+
+frontend https-in
+    bind *:443 ssl crt /etc/haproxy/certs/haproxy.pem
+    use_backend %[req.hdr(host),lower,field(1,:),map(/etc/haproxy/hosts.map,be_default)]
+    default_backend be_default
+
+{% for c in haproxy_clients %}
+backend be_{{ c.name }}
+    option forwardfor
+    option httpchk GET /
+    server {{ c.name }} {{ c.address }}:{{ c.port }} check
+
+{% endfor %}
+backend be_default
+    option forwardfor
+    option httpchk GET /
+    server default {{ haproxy_clients[0].address }}:{{ haproxy_clients[0].port }} check

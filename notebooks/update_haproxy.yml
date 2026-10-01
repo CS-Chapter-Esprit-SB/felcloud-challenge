@@ -1,0 +1,26 @@
+---
+- name: Hot-update HAProxy routing
+  hosts: haproxy_nodes
+  become: true
+  serial: 1                      # one node at a time; the other keeps the VIP
+  tasks:
+    - name: Deploy host-to-backend map
+      ansible.builtin.template:
+        src: hosts.map.j2
+        dest: /etc/haproxy/hosts.map
+        mode: "0644"
+      notify: Reload HAProxy
+
+    - name: Deploy HAProxy configuration
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        mode: "0644"
+        validate: "/usr/sbin/haproxy -c -f %s"
+      notify: Reload HAProxy
+
+  handlers:
+    - name: Reload HAProxy
+      ansible.builtin.systemd:
+        name: haproxy
+        state: reloaded
