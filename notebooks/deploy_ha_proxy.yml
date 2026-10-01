@@ -4,50 +4,35 @@
   become: true
 
   vars:
-    # -------------------------------------------------------------------------
-    # 1. HAProxy Configuration (geerlingguy.haproxy)
-    # -------------------------------------------------------------------------
+    use_bastion_gateway: true         # true = default route via the bastion
+    dns_servers: ["8.8.8.8", "1.1.1.1"]
+    cluster_vip: "{{ haproxy_vip }}"    # inventory defines haproxy_vip, not cluster_vip
+    vrrp_auth_pass: "FelHAP51"          # max 8 chars; move to ansible-vault
+
+    # --- geerlingguy.haproxy ---
     haproxy_global_vars:
       - "log /dev/log local0"
       - "log /dev/log local1 notice"
-      - "chroot /var/lib/haproxy"
-      - "user haproxy"
-      - "group haproxy"
       - "daemon"
       - "maxconn 4096"
 
-    haproxy_frontends:
-          - name: 'http-in'
-            address: '*:80'
-            mode: 'http'
-            options:
-              - 'redirect scheme https code 301 if !{ ssl_fc }'
+    haproxy_frontend_name: "https-in"
+    haproxy_frontend_bind_address: "*"
+    haproxy_frontend_port: 443
+    haproxy_frontend_mode: "http"
 
-          - name: 'https-in'
-            address: '*:443 ssl crt /etc/haproxy/certs/haproxy.pem'
-            mode: 'http'
-            options:
-              - 'default_backend app-backend'
+    haproxy_backend_name: "app-backend"
+    haproxy_backend_mode: "http"
+    haproxy_backend_balance_method: "roundrobin"
+    haproxy_backend_httpchk: "GET /health"
 
-    haproxy_backends:
-      - name: 'app-backend'
-        mode: 'http'
-        balance: 'roundrobin'
-        options:
-          - 'option httpchk GET /health'
-        servers:
-          - name: 'app1'
-            address: '10.0.1.20:80 check'
-          - name: 'app2'
-            address: '10.0.1.21:80 check'
+    haproxy_backend_servers:
+      - name: client
+        address: "10.0.2.179:80"
 
-    # -------------------------------------------------------------------------
-    # 2. Keepalived Configuration (evrardjp.keepalived)
-    # -------------------------------------------------------------------------
-    keepalived_sync_groups:
-      VG1:
-        instances:
-          - VI_1
+    keepalived_global_defs:
+      - "enable_script_security"
+      - "script_user root"
 
     keepalived_instances:
       VI_1:
@@ -57,22 +42,65 @@
         priority: "{{ keepalived_priority }}"
         authentication:
           auth_type: PASS
-          auth_pass: "FelCloudSecureVRRPKey"
+          auth_pass: "{{ vrrp_auth_pass }}"
         unicast_src_ip: "{{ ansible_host }}"
         unicast_peers:
           - "{{ peer_ip }}"
         vips:
-          - "{{ cluster_vip }}/24 dev {{ network_interface }}"
+          - "{{ cluster_vip }}/{{ subnet_cidr.split('/')[1] }} dev {{ network_interface }}"
         track_scripts:
           - check_haproxy
 
     keepalived_scripts:
       check_haproxy:
-        script: "killall -0 haproxy"
+        check_script: "/usr/bin/pgrep -x haproxy"
         interval: 2
-        weight: 2
-  pre_tasks:  
-    # 1. Enable Non-Local IP Binding
+        weight: -20
+
+  pre_tasks:
+    # 1. Optional: send internet traffic through the bastion
+    - name: Route internet traffic through the bastion
+      when: use_bastion_gateway | bool
+      block:
+        - name: Write netplan override with the bastion as default gateway
+          ansible.builtin.copy:
+            dest: /etc/netplan/99-haproxy-gateway.yaml
+            mode: "0600"
+            content: |
+              network:
+                version: 2
+                ethernets:
+                  {{ network_interface }}:
+                    dhcp4: true
+                    dhcp4-overrides:
+                      use-routes: false
+                      use-dns: false
+                    routes:
+                      - to: default
+                        via: {{ bastion_gateway }}
+                      - to: 169.254.169.254/32
+                        via: 10.0.1.2
+                    nameservers:
+                      addresses: {{ dns_servers }}
+          register: gw_cfg
+
+        - name: Apply netplan
+          ansible.builtin.command: netplan apply
+          when: gw_cfg.changed
+
+        - name: Reconnect after network change
+          ansible.builtin.meta: reset_connection
+
+        - name: Wait for the node to come back
+          ansible.builtin.wait_for_connection:
+            timeout: 60
+
+    # 2. Verify the internet path before installing anything
+    - name: Check outbound connectivity
+      ansible.builtin.command: ping -c2 -W3 8.8.8.8
+      changed_when: false
+
+    # 3. System prerequisites
     - name: Allow services to bind to non-local Virtual IPs
       ansible.posix.sysctl:
         name: net.ipv4.ip_nonlocal_bind
@@ -80,7 +108,12 @@
         state: present
         reload: true
 
-    # 2. Ensure haproxy group & user exist prior to cert generation
+    - name: Install openssl
+      ansible.builtin.apt:
+        name: openssl
+        state: present
+        update_cache: true
+
     - name: Ensure haproxy system group exists
       ansible.builtin.group:
         name: haproxy
@@ -94,7 +127,7 @@
         system: true
         shell: /usr/sbin/nologin
 
-    # 3. Prepare SSL Certificate directory
+    # 4. Certificates
     - name: Ensure HAProxy certs directory exists
       ansible.builtin.file:
         path: /etc/haproxy/certs
@@ -103,8 +136,7 @@
         group: haproxy
         mode: '0750'
 
-    # 4. Create OpenSSL Self-Signed SSL Certificate bundle
-    - name: Generate SSL Key and Certificate
+    - name: Generate SSL key and certificate
       ansible.builtin.command: >
         openssl req -x509 -nodes -days 365 -newkey rsa:2048
         -keyout /etc/haproxy/certs/haproxy.key
@@ -115,7 +147,8 @@
 
     - name: Create combined PEM bundle for HAProxy
       ansible.builtin.shell: >
-        cat /etc/haproxy/certs/haproxy.key /etc/haproxy/certs/haproxy.crt > /etc/haproxy/certs/haproxy.pem
+        cat /etc/haproxy/certs/haproxy.key /etc/haproxy/certs/haproxy.crt
+        > /etc/haproxy/certs/haproxy.pem
       args:
         creates: /etc/haproxy/certs/haproxy.pem
 
@@ -125,7 +158,54 @@
         owner: haproxy
         group: haproxy
         mode: '0600'
-  # Roles execute sequentially: HAProxy first, then Keepalived failover daemon
+
   roles:
     - role: geerlingguy.haproxy
     - role: evrardjp.keepalived
+
+  tasks:
+    - name: Deploy custom HAProxy configuration
+      ansible.builtin.copy:
+        dest: /etc/haproxy/haproxy.cfg
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          global
+              log /dev/log local0
+              log /dev/log local1 notice
+              daemon
+              maxconn 4096
+
+          defaults
+              log global
+              mode http
+              option httplog
+              option dontlognull
+              timeout connect 5s
+              timeout client 50s
+              timeout server 50s
+
+          frontend http-in
+              bind *:80
+              mode http
+              redirect scheme https code 301
+
+          frontend https-in
+              bind *:443 ssl crt /etc/haproxy/certs/haproxy.pem
+              mode http
+              default_backend app-backend
+
+          backend app-backend
+              mode http
+              balance roundrobin
+              option forwardfor
+              option httpchk GET /
+              server client 10.0.2.179:80 check
+
+        validate: "/usr/sbin/haproxy -c -f %s"
+    - name: Restart HAProxy
+      ansible.builtin.systemd:
+        name: haproxy
+        state: restarted
+        enabled: true

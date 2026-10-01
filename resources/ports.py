@@ -143,7 +143,8 @@ bastion_port_inbound = openstack.networking.Port(
             ip_address="10.0.1.254",  # Fixed private management IP
         )
     ],
-    security_group_ids=[secgroup_bastion.id],
+    port_security_enabled=False,
+    #security_group_ids=[secgroup_bastion.id],
 )
 
 bastion_port_outbound = openstack.networking.Port(

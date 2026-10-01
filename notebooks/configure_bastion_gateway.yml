@@ -6,6 +6,8 @@
 
   vars:
     internal_if: ens4
+    external_if: ens3
+    harden_input: true      # replaces sg-bastion once port security is off
 
   tasks:
     - name: Enable IPv4 forwarding
@@ -31,6 +33,25 @@
         state: present
         update_cache: true
 
+    # ---------------------------------------------------------------
+    # Hairpin on ens3: HAProxy traffic enters and leaves the same NIC,
+    # so the bastion must not tell clients to use the router directly.
+    # ---------------------------------------------------------------
+    - name: Stop sending ICMP redirects
+      ansible.posix.sysctl:
+        name: "{{ item }}"
+        value: "0"
+        sysctl_set: true
+        state: present
+        reload: true
+      loop:
+        - net.ipv4.conf.all.send_redirects
+        - net.ipv4.conf.default.send_redirects
+        - "net.ipv4.conf.{{ ext_if }}.send_redirects"
+
+    # ---------------------------------------------------------------
+    # NAT
+    # ---------------------------------------------------------------
     - name: Masquerade the outbound subnet to the internet
       ansible.builtin.iptables:
         table: nat
@@ -41,6 +62,20 @@
         comment: "NAT outbound subnet to the internet"
       notify: Save iptables rules
 
+    - name: Masquerade the inbound subnet to the internet
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "{{ inbound_cidr }}"
+        destination: "! {{ inbound_cidr }}"
+        out_interface: "{{ ext_if }}"
+        jump: MASQUERADE
+        comment: "NAT inbound subnet to the internet"
+      notify: Save iptables rules
+
+    # ---------------------------------------------------------------
+    # FORWARD
+    # ---------------------------------------------------------------
     - name: Allow outbound subnet to the internet
       ansible.builtin.iptables:
         chain: FORWARD
@@ -56,11 +91,100 @@
         chain: FORWARD
         in_interface: "{{ ext_if }}"
         out_interface: "{{ internal_if }}"
-        ctstate:
-          - RELATED
-          - ESTABLISHED
+        ctstate: [RELATED, ESTABLISHED]
         jump: ACCEPT
         comment: "Established return traffic"
+      notify: Save iptables rules
+
+    - name: Allow inbound subnet out through the same interface
+      ansible.builtin.iptables:
+        chain: FORWARD
+        in_interface: "{{ ext_if }}"
+        out_interface: "{{ ext_if }}"
+        source: "{{ inbound_cidr }}"
+        jump: ACCEPT
+        comment: "Inbound subnet to internet (hairpin)"
+      notify: Save iptables rules
+
+    - name: Allow return traffic back to the inbound subnet
+      ansible.builtin.iptables:
+        chain: FORWARD
+        in_interface: "{{ ext_if }}"
+        out_interface: "{{ ext_if }}"
+        destination: "{{ inbound_cidr }}"
+        ctstate: [RELATED, ESTABLISHED]
+        jump: ACCEPT
+        comment: "Return traffic (hairpin)"
+      notify: Save iptables rules
+
+    # ---------------------------------------------------------------
+    # INPUT firewall (replaces sg-bastion when port security is off)
+    # Rules are added BEFORE the policy changes to DROP.
+    # ---------------------------------------------------------------
+    - name: INPUT - allow loopback
+      ansible.builtin.iptables:
+        chain: INPUT
+        in_interface: lo
+        jump: ACCEPT
+        comment: "loopback"
+      when: harden_input | bool
+      notify: Save iptables rules
+
+    - name: INPUT - allow established and related
+      ansible.builtin.iptables:
+        chain: INPUT
+        ctstate: [RELATED, ESTABLISHED]
+        jump: ACCEPT
+        comment: "established"
+      when: harden_input | bool
+      notify: Save iptables rules
+
+    - name: INPUT - allow SSH
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "22"
+        jump: ACCEPT
+        comment: "ssh"
+      when: harden_input | bool
+      notify: Save iptables rules
+
+    - name: INPUT - allow DHCP replies
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: udp
+        destination_port: "68"
+        jump: ACCEPT
+        comment: "dhcp client"
+      when: harden_input | bool
+      notify: Save iptables rules
+
+    - name: INPUT - allow ICMP from internal subnets
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: icmp
+        source: "{{ item }}"
+        jump: ACCEPT
+        comment: "icmp internal"
+      loop: ["{{ inbound_cidr }}", "{{ outbound_cidr }}"]
+      when: harden_input | bool
+      notify: Save iptables rules
+
+    - name: INPUT - allow all from internal subnets
+      ansible.builtin.iptables:
+        chain: INPUT
+        source: "{{ item }}"
+        jump: ACCEPT
+        comment: "internal subnets"
+      loop: ["{{ inbound_cidr }}", "{{ outbound_cidr }}"]
+      when: harden_input | bool
+      notify: Save iptables rules
+
+    - name: INPUT - default policy DROP
+      ansible.builtin.iptables:
+        chain: INPUT
+        policy: DROP
+      when: harden_input | bool
       notify: Save iptables rules
 
   handlers:
