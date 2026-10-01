@@ -9,9 +9,50 @@ from .ports import (
     haproxy_primary_port,
     squid_backup_port,
     squid_primary_port,
-    bastion_port,
+    bastion_port_inbound,
+    bastion_port_outbound,
     client_vm_port,
 )
+
+USER_DATA = """#cloud-config
+
+users:
+  - default
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: sudo
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: "12345678Aa"
+
+ssh_pwauth: false
+
+chpasswd:
+  expire: false
+
+write_files:
+  - path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+    permissions: "0644"
+    content: |
+      network: {config: disabled}
+
+  - path: /etc/netplan/01-bastion.yaml
+    permissions: "0600"
+    content: |
+      network:
+        version: 2
+        ethernets:
+          ens3:
+            dhcp4: true
+          ens4:
+            dhcp4: false
+            addresses: [10.0.2.254/24]
+
+runcmd:
+  - rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/99-bastion.yaml
+  - netplan generate
+  - netplan apply
+""" 
 
 
 def create() -> tuple[
@@ -85,7 +126,10 @@ def create() -> tuple[
         name="vm-bastion",
         image_id=image.id,
         flavor_id=flavor.id,
-        networks=[openstack.compute.InstanceNetworkArgs(port=bastion_port.id)],
+        networks=[
+            openstack.compute.InstanceNetworkArgs(port=bastion_port_inbound.id), 
+            openstack.compute.InstanceNetworkArgs(port=bastion_port_outbound.id)
+        ],
         opts=pulumi.ResourceOptions(
             custom_timeouts=pulumi.CustomTimeouts(
                 create="15m",
@@ -94,6 +138,7 @@ def create() -> tuple[
             )
         ),
         key_pair=keypair.name,
+        user_data=USER_DATA,
     )
 
     client_vm = openstack.compute.Instance(

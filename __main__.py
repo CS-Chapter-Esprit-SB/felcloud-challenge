@@ -14,6 +14,8 @@ from resources.ports import (
     vip_haproxy_port,
     vip_squid_port,
     allocated_fip_bastian,
+    bastion_port_inbound,
+    bastion_port_outbound
 )
 from resources.keypairs import keypair
 
@@ -52,6 +54,10 @@ inventory_file = pulumi.Output.all(
     squid_backup_ip,
     haproxy_vip,
     squid_vip,
+    bastion_port_inbound.fixed_ips[0].ip_address,
+    bastion_port_outbound.fixed_ips[0].ip_address,
+    "10.0.1.0/24",
+    "10.0.2.0/24",
 ).apply(generate_inventory_file)
 
 _ = keypair.private_key.apply(save_private_key)

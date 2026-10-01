@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/playbook.json
+---
+- name: Configure Bastion Host as NAT Gateway
+  hosts: bastion
+  become: true
+
+  vars:
+    internal_if: ens4
+
+  tasks:
+    - name: Enable IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_set: true
+        state: present
+        reload: true
+
+    - name: Set external network interface
+      ansible.builtin.set_fact:
+        ext_if: "{{ ansible_default_ipv4.interface }}"
+
+    - name: Make sure the external and internal interfaces differ
+      ansible.builtin.assert:
+        that: ext_if != internal_if
+        fail_msg: "Default route is on {{ internal_if }}; fix the bastion routing first."
+
+    - name: Install iptables-persistent
+      ansible.builtin.apt:
+        name: iptables-persistent
+        state: present
+        update_cache: true
+
+    - name: Masquerade the outbound subnet to the internet
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "{{ outbound_cidr }}"
+        out_interface: "{{ ext_if }}"
+        jump: MASQUERADE
+        comment: "NAT outbound subnet to the internet"
+      notify: Save iptables rules
+
+    - name: Allow outbound subnet to the internet
+      ansible.builtin.iptables:
+        chain: FORWARD
+        in_interface: "{{ internal_if }}"
+        out_interface: "{{ ext_if }}"
+        source: "{{ outbound_cidr }}"
+        jump: ACCEPT
+        comment: "Outbound subnet to internet"
+      notify: Save iptables rules
+
+    - name: Allow return traffic to the outbound subnet
+      ansible.builtin.iptables:
+        chain: FORWARD
+        in_interface: "{{ ext_if }}"
+        out_interface: "{{ internal_if }}"
+        ctstate:
+          - RELATED
+          - ESTABLISHED
+        jump: ACCEPT
+        comment: "Established return traffic"
+      notify: Save iptables rules
+
+  handlers:
+    - name: Save iptables rules
+      ansible.builtin.command: netfilter-persistent save
+      changed_when: true

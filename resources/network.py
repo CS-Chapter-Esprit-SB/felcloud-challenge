@@ -30,7 +30,7 @@ outbound_subnet = openstack.networking.Subnet(
     cidr="10.0.2.0/24",
     ip_version=4,
     dns_nameservers=["8.8.8.8", "1.1.1.1"],
-    enable_dhcp=False,
+    enable_dhcp=True,
 )
 
 # -----------------------------------------------------------------------------

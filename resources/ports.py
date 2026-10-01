@@ -133,7 +133,7 @@ squid_backup_port = openstack.networking.Port(
     ],
 )
 
-bastion_port = openstack.networking.Port(
+bastion_port_inbound = openstack.networking.Port(
     "bastion-port",
     name="port-bastion",
     network_id=inbound_subnet.network_id,
@@ -145,6 +145,23 @@ bastion_port = openstack.networking.Port(
     ],
     security_group_ids=[secgroup_bastion.id],
 )
+
+bastion_port_outbound = openstack.networking.Port(
+    "bastion-port-outbound",
+    name="port-bastion-outbound",
+    network_id=outbound_subnet.network_id,
+    fixed_ips=[
+        openstack.networking.PortFixedIpArgs(
+            subnet_id=outbound_subnet.id,
+            ip_address="10.0.2.254",  # Fixed private management IP
+        )
+    ],
+    port_security_enabled=False,
+    #security_group_ids=[secgroup_bastion.id],
+
+)
+
+
 client_vm_port = openstack.networking.Port(
     "client-vm-port",
     name="port-client-vm",
@@ -156,6 +173,7 @@ client_vm_port = openstack.networking.Port(
     ],
     security_group_ids=[secgroup_client_vm.id],
 )
+
 
 
 # -----------------------------------------------------------------------------
@@ -171,12 +189,23 @@ fip_associate_haproxy = openstack.networking.FloatingIpAssociate(
     opts=pulumi.ResourceOptions(depends_on=[router_interface_inbound]),
 )
 
+
+
+allocated_fip_squid = create_floating_ip("squid")
+
+fip_associate_squid = openstack.networking.FloatingIpAssociate(
+    "fip-associate-squid",
+    floating_ip=allocated_fip_squid.address,
+    port_id=vip_squid_port.id,
+    opts=pulumi.ResourceOptions(depends_on=[router_interface_inbound]),
+)
+
 allocated_fip_bastian = create_floating_ip("bastion")
 
 fip_associate_bastion = openstack.networking.FloatingIpAssociate(
     "fip-bastion-associate",
     floating_ip=allocated_fip_bastian.address,
-    port_id=bastion_port.id,
+    port_id=bastion_port_inbound.id,
 
 )
 
