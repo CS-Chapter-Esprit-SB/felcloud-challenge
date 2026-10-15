@@ -1,0 +1,109 @@
+---
+- name: Detect HAProxy roles
+  hosts: haproxy_nodes
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Inspect IPv4 addresses
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -o
+          - -4
+          - addr
+          - show
+      register: ip_addresses
+      changed_when: false
+
+    - name: Determine whether this node owns the VIP
+      ansible.builtin.set_fact:
+        owns_vip: "{{ (' ' ~ haproxy_vip ~ '/') in ip_addresses.stdout }}"
+
+    - name: Display detected HAProxy role
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          owns_vip: "{{ owns_vip }}"
+          addresses: "{{ ip_addresses.stdout_lines }}"
+
+    - name: Classify HAProxy node
+      ansible.builtin.group_by:
+        key: "haproxy_vip_{{ 'owner' if (owns_vip | bool) else 'backup' }}"
+
+- name: Validate VIP ownership before updating
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Ensure exactly one node owns the VIP
+      ansible.builtin.assert:
+        that:
+          - groups['haproxy_vip_owner'] | default([]) | length == 1
+          - groups['haproxy_vip_backup'] | default([]) | length == 1
+        fail_msg: >-
+          Expected exactly one VIP owner and one backup.
+          No HAProxy configuration has been updated.
+        success_msg: "VIP ownership verified."
+
+- name: Update the backup first
+  hosts: haproxy_vip_backup
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+
+  tasks:
+    - ansible.builtin.import_tasks: update_haproxy_tasks.yml
+
+    - name: Reload HAProxy now, before the health check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify HAProxy service is active
+      ansible.builtin.systemd:
+        name: haproxy
+      register: haproxy_svc
+      failed_when: haproxy_svc.status.ActiveState != 'active'
+
+    - name: Verify HAProxy is accepting connections
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ haproxy_health_port | default(80) }}"
+        timeout: 15
+
+  handlers:
+    - name: Reload HAProxy
+      ansible.builtin.systemd:
+        name: haproxy
+        state: reloaded
+
+- name: Update the VIP owner second
+  hosts: haproxy_vip_owner
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+
+  tasks:
+    - ansible.builtin.import_tasks: update_haproxy_tasks.yml
+
+    - name: Reload HAProxy now, before the health check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify HAProxy service is active
+      ansible.builtin.systemd:
+        name: haproxy
+      register: haproxy_svc
+      failed_when: haproxy_svc.status.ActiveState != 'active'
+
+    - name: Verify HAProxy is accepting connections
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ haproxy_health_port | default(80) }}"
+        timeout: 15
+
+  handlers:
+    - name: Reload HAProxy
+      ansible.builtin.systemd:
+        name: haproxy
+        state: reloaded

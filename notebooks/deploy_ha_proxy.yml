@@ -36,6 +36,7 @@
         check_script: "/usr/bin/pgrep -x haproxy"
         interval: 2
         weight: -20
+    keepalived_virtual_servers: []
 
   pre_tasks:
     # 1. Optional: send internet traffic through the bastion

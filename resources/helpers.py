@@ -1,10 +1,8 @@
 # -----------------------------------------------------------------------------
-import os
-from .config import external_network_name
 import pulumi_openstack as openstack
 import inspect
 
-from .config import external_network_name, inbound_gateway_ip, outbound_gateway_ip, backend_ip
+from .config import inbound_gateway_ip, outbound_gateway_ip, backend_ip
 def generate_inventory_file(args: list[str]) -> None:
     (
         bastion_fip,
@@ -62,7 +60,7 @@ def generate_inventory_file(args: list[str]) -> None:
 
         [all:vars]
         ansible_user=ubuntu
-        ansible_ssh_private_key_file=~/.ssh/openstack_ansible.pem
+        ansible_ssh_private_key_file=~/.ssh/aymen_key_2.pem
 
         haproxy_vip={h_vip_ip}
         squid_vip={s_vip_ip}
@@ -77,20 +75,3 @@ def generate_inventory_file(args: list[str]) -> None:
 def get_reserved_floating_ip(name: str, fip_id: str) -> openstack.networking.FloatingIp:
     """Adopt a pre-reserved floating IP by ID. Pulumi never creates or deletes it."""
     return openstack.networking.FloatingIp.get(f"floatip_{name}", id=fip_id)
-
-def save_private_key(key_content: str) -> None:
-    if not key_content:
-        return
-
-    # Expand user path ~/.ssh/openstack_ansible.pem
-    ssh_dir = os.path.expanduser("~/.ssh")
-    key_path = os.path.join(ssh_dir, "openstack_ansible.pem")
-
-    os.makedirs(ssh_dir, exist_ok=True)
-
-    # Write key file
-    with open(key_path, "w", encoding="utf-8") as f:
-        _ = f.write(key_content)
-
-    # Set strict SSH permissions (chmod 600)
-    os.chmod(key_path, 0o600)

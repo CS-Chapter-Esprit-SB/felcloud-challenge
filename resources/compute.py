@@ -81,7 +81,6 @@ def create() -> tuple[
             openstack.compute.InstanceNetworkArgs(port=haproxy_primary_port.id)
         ],
         key_pair=keypair.name,
-        opts=pulumi.ResourceOptions(depends_on=[keypair]),
     )
 
     haproxy_backup = openstack.compute.Instance(
@@ -93,7 +92,6 @@ def create() -> tuple[
             openstack.compute.InstanceNetworkArgs(port=haproxy_backup_port.id)
         ],
         key_pair=keypair.name,
-        opts=pulumi.ResourceOptions(depends_on=[keypair]),
     )
 
     # -------------------------------------------------------------------------
@@ -108,7 +106,6 @@ def create() -> tuple[
             openstack.compute.InstanceNetworkArgs(port=squid_primary_port.id)
         ],
         key_pair=keypair.name,
-        opts=pulumi.ResourceOptions(depends_on=[keypair]),
     )
 
     squid_backup = openstack.compute.Instance(
@@ -120,7 +117,6 @@ def create() -> tuple[
             openstack.compute.InstanceNetworkArgs(port=squid_backup_port.id)
         ],
         key_pair=keypair.name,
-        opts=pulumi.ResourceOptions(depends_on=[keypair]),
     )
 
     bastion_vm = openstack.compute.Instance(

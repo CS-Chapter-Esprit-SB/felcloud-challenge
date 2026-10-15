@@ -166,7 +166,7 @@ ssh-keygen -f ~/.ssh/known_hosts -R <BASTION_FLOATING_IP>
 Connect to the Bastion:
 
 ```bash
-ssh -i ~/.ssh/openstack_ansible.pem ubuntu@<BASTION_FLOATING_IP>
+ssh -i ~/.ssh/aymen_key_2.pem ubuntu@<BASTION_FLOATING_IP>
 ```
 
 Internal instances are accessed through the Bastion.

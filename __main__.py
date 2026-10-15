@@ -3,7 +3,7 @@ from pathlib import Path
 import pulumi
 #import pulumi_command as command
 from resources.compute import create
-from resources.helpers import generate_inventory_file , save_private_key
+from resources.helpers import generate_inventory_file 
 
 from resources.ports import (
     allocated_fip,
@@ -17,7 +17,6 @@ from resources.ports import (
     bastion_port_inbound,
     bastion_port_outbound
 )
-from resources.keypairs import keypair
 
 
 NOTEBOOK_ROOT = Path(__file__).parent / "notebooks"
@@ -60,14 +59,12 @@ inventory_file = pulumi.Output.all(
     "10.0.2.0/24",
 ).apply(generate_inventory_file)
 
-_ = keypair.private_key.apply(save_private_key)
 
 
 
 # -----------------------------------------------------------------------------
 # 4. Stack Exports
 # -----------------------------------------------------------------------------
-pulumi.export("private_key_pem", keypair.private_key)
 pulumi.export("public_floating_ip", allocated_fip.address)
 pulumi.export("haproxy_cluster_vip", haproxy_vip)
 pulumi.export("squid_cluster_vip", squid_vip)
@@ -76,4 +73,3 @@ pulumi.export("haproxy_master_ip", haproxy_master_ip)
 pulumi.export("haproxy_backup_ip", haproxy_backup_ip)
 pulumi.export("squid_master_ip", squid_master_ip)
 pulumi.export("squid_backup_ip", squid_backup_ip)
-pulumi.export("private_key_pem", keypair.private_key)
