@@ -2,9 +2,9 @@
 import pulumi
 import pulumi_openstack as openstack
 
-from .config import  ha_proxy_pool, squid_proxy_pool,backend_ip, haproxy_fip_id, bastion_fip_id
-from .helpers import get_reserved_floating_ip
-from .network import (
+from resources.config import  ha_proxy_pool, squid_proxy_pool,backend_ip, haproxy_fip_id, bastion_fip_id
+from resources.helpers import get_reserved_floating_ip
+from resources.network import (
     inbound_net,
     inbound_subnet,
     outbound_net,

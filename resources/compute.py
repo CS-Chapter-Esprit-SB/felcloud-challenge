@@ -1,10 +1,10 @@
 """Compute instances for HAProxy and Forward Proxy Active/Passive HA Clusters."""
 import pulumi
 import pulumi_openstack as openstack
-from .keypairs import keypair
+from resources.keypairs import keypair
 
-from .config import flavor_name, image_name
-from .ports import (
+from resources.config import flavor_name, image_name
+from resources.ports import (
     haproxy_backup_port,
     haproxy_primary_port,
     squid_backup_port,

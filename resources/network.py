@@ -1,7 +1,7 @@
 """Networks, subnets and the router connecting them to the external provider network."""
 import pulumi_openstack as openstack
 
-from .config import external_network_name,inbound_gateway_ip,outbound_gateway_ip
+from resources.config import external_network_name,inbound_gateway_ip,outbound_gateway_ip
 
 # External provider network
 ext_net = openstack.networking.get_network(name=external_network_name)
