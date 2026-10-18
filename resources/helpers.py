@@ -1,8 +1,24 @@
 # -----------------------------------------------------------------------------
 import pulumi_openstack as openstack
-import inspect
-
+from jinja2 import Environment, FileSystemLoader
+from pathlib import Path
 from .config import inbound_gateway_ip, outbound_gateway_ip, backend_ip
+
+def get_root()->Path:
+    """
+    Return the root directory of the project. recursivly look for .git or .lock file to find the root directory of the project.
+    """
+    current_dir = Path(__file__).resolve().parent
+    while current_dir != current_dir.parent:
+        if (current_dir / ".git").exists() or (current_dir / "Pipfile.lock").exists():
+            return current_dir
+        current_dir = current_dir.parent
+    raise RuntimeError("Could not find the root directory of the project.")
+
+
+ROOT_DIR = get_root()
+
+
 def generate_inventory_file(args: list[str]) -> None:
     (
         bastion_fip,
@@ -18,60 +34,37 @@ def generate_inventory_file(args: list[str]) -> None:
         outbound_cidr,
     ) = args
 
-    inventory_content = inspect.cleandoc(
-        f"""
-        [bastion]
-        bastion-host ansible_host={bastion_fip}
+    env = Environment(loader=FileSystemLoader(ROOT_DIR/"resources"/"configs"))
+    template = env.get_template("inventory.j2")
 
-        [haproxy_nodes]
-        haproxy-master ansible_host={h_master} keepalived_role=MASTER keepalived_priority=101 peer_ip={h_backup}
-        haproxy-backup ansible_host={h_backup} keepalived_role=BACKUP keepalived_priority=100 peer_ip={h_master}
+    # 2. Define your context variables (your python variables)
+    context = {
+        "bastion_fip": bastion_fip,
+        "h_master": h_master,
+        "h_backup": h_backup,
+        "s_master": s_master,
+        "s_backup": s_backup,
+        "backend_ip": backend_ip,
+        "bastion_inbound_ip": bastion_inbound_ip,
+        "bastion_outbound_ip": bastion_outbound_ip,
+        "inbound_cidr": inbound_cidr,
+        "outbound_cidr": outbound_cidr,
+        "inbound_gateway_ip": inbound_gateway_ip,
+        "outbound_gateway_ip": outbound_gateway_ip,
+        "h_vip_ip": h_vip_ip,
+        "s_vip_ip": s_vip_ip,
+    }
 
-        [squid_nodes]
-        squid-master ansible_host={s_master} keepalived_role=MASTER keepalived_priority=101 peer_ip={s_backup}
-        squid-backup ansible_host={s_backup} keepalived_role=BACKUP keepalived_priority=100 peer_ip={s_master}
-        [client_nodes]
-        client-vm ansible_host={backend_ip}
-
-        [internal_nodes:children]
-        haproxy_nodes
-        squid_nodes
-        client_nodes
-
-        [haproxy_nodes:vars]
-        network_interface=ens3
-        bastion_gateway={bastion_inbound_ip}
-        subnet_cidr={inbound_cidr}
-        neutron_router_ip={inbound_gateway_ip}
-        backend_ip={backend_ip}
-
-
-        [squid_nodes:vars]
-        network_interface=ens3
-        bastion_gateway={bastion_outbound_ip}
-        subnet_cidr={outbound_cidr}
-        neutron_router_ip={outbound_gateway_ip}
-
-        [bastion:vars]
-        bastion_inbound_ip={bastion_inbound_ip}
-        bastion_outbound_ip={bastion_outbound_ip}
-        inbound_cidr={inbound_cidr}
-        outbound_cidr={outbound_cidr}
-
-        [all:vars]
-        ansible_user=ubuntu
-        ansible_ssh_private_key_file=~/.ssh/aymen_key_2.pem
-
-        haproxy_vip={h_vip_ip}
-        squid_vip={s_vip_ip}
-
-        inbound_cidr={inbound_cidr}
-        outbound_cidr={outbound_cidr}
-    """) + "\n"
-
-    with open("inventory.ini", "w", encoding="utf-8") as f:
+    # 3. Render the template
+    inventory_content = template.render(context) + "\n"
+    with open(ROOT_DIR/"inventory.ini", "w", encoding="utf-8") as f:
         _ = f.write(inventory_content)
 
 def get_reserved_floating_ip(name: str, fip_id: str) -> openstack.networking.FloatingIp:
     """Adopt a pre-reserved floating IP by ID. Pulumi never creates or deletes it."""
     return openstack.networking.FloatingIp.get(f"floatip_{name}", id=fip_id)
+
+def get_user_data_config()-> str:
+    """Read the user_data.sh file and return its content as a string."""
+    with open(ROOT_DIR/"resources"/"configs"/"user.config", "r", encoding="utf-8") as f:
+        return f.read()

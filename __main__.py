@@ -1,12 +1,12 @@
-#import os 
-from pathlib import Path
 import pulumi
 #import pulumi_command as command
 from resources.compute import create
 from resources.helpers import generate_inventory_file 
-
+from resources.sandboxes.loader import load_sandboxes
+from resources.sandboxes.team_sandbox import SandboxManager
+from resources.network import inbound_subnet,outbound_subnet
+from resources.security_groups import secgroup_bastion
 from resources.ports import (
-    allocated_fip,
     haproxy_backup_port,
     haproxy_primary_port,
     squid_backup_port,
@@ -19,15 +19,12 @@ from resources.ports import (
 )
 
 
-NOTEBOOK_ROOT = Path(__file__).parent / "notebooks"
-## bastion
-
 
 
 # -----------------------------------------------------------------------------
 # 1. Provision Infrastructure Instances
 # -----------------------------------------------------------------------------
-haproxy_master, haproxy_backup, squid_master, squid_backup, bastion_vm ,client_vm = create()
+compute= create()
 
 # Extract Dynamic IPs from Port Resources
 haproxy_master_ip = haproxy_primary_port.fixed_ips[0].ip_address
@@ -59,14 +56,20 @@ inventory_file = pulumi.Output.all(
     "10.0.2.0/24",
 ).apply(generate_inventory_file)
 
-
-
-
 # -----------------------------------------------------------------------------
-# 4. Stack Exports
+# 3. Load Sandboxes from YAML and Create TeamSandboxes
 # -----------------------------------------------------------------------------
-pulumi.export("public_floating_ip", allocated_fip.address)
-pulumi.export("haproxy_cluster_vip", haproxy_vip)
+sandbox_configs = load_sandboxes()
+
+manager = SandboxManager(
+    subnets={"inbound_subnet": inbound_subnet, "outbound_subnet": outbound_subnet},
+    allowed_ingress=[(secgroup_bastion.id, 22)],
+)
+
+# Provision each sandbox.
+for config_path, sandbox_config in sandbox_configs:
+    sandbox = manager.create_instance(sandbox_config)
+
 pulumi.export("squid_cluster_vip", squid_vip)
 
 pulumi.export("haproxy_master_ip", haproxy_master_ip)

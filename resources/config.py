@@ -1,11 +1,17 @@
 """Shared configuration values for the felcloud proxy stack."""
 import pulumi
-
+import pulumi_openstack as openstack
 config = pulumi.Config()
 
 external_network_name = "INTERNET"
+
 image_name = "Ubuntu 22.04 LTS - Jammy Jellyfish"
 flavor_name = "G0.basic.1c2g"
+
+image = openstack.images.get_image(name=image_name)
+flavor = openstack.compute.get_flavor(name=flavor_name)
+
+
 ha_proxy_pool = ["10.0.1.100","10.0.1.11","10.0.1.12"]
 squid_proxy_pool = ["10.0.2.100","10.0.2.11","10.0.2.12"]
 inbound_gateway_ip = "10.0.1.1"

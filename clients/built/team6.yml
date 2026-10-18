@@ -1,0 +1,20 @@
+name: sandbox-web
+url: https://web.example.com
+subnet: inbound_subnet
+ip: 10.0.1.20            # must be inside the subnet's CIDR
+
+security_group:
+  description: Public web sandbox
+  ingress:
+    - protocol: tcp
+      port: 443
+      remote_ip_prefix: 0.0.0.0/0
+      description: HTTPS from anywhere
+    - protocol: tcp
+      port: 80
+      remote_ip_prefix: 0.0.0.0/0
+      description: HTTP from anywhere
+  egress:
+    - protocol: any
+      remote_ip_prefix: 0.0.0.0/0
+      description: Allow all outbound

@@ -2,8 +2,8 @@
 import pulumi
 import pulumi_openstack as openstack
 from resources.keypairs import keypair
-
-from resources.config import flavor_name, image_name
+from resources.models import SharedInfrastructure
+from resources.config import image, flavor
 from resources.ports import (
     haproxy_backup_port,
     haproxy_primary_port,
@@ -12,62 +12,18 @@ from resources.ports import (
     bastion_port_inbound,
     bastion_port_outbound,
     client_vm_port,
+    vip_haproxy_port,
+    vip_squid_port,
 )
 
-USER_DATA = """#cloud-config
+from resources.helpers import get_user_data_config
 
-users:
-  - default
-  - name: ubuntu
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: sudo
-    shell: /bin/bash
-    lock_passwd: false
-    plain_text_passwd: "12345678Aa"
-
-ssh_pwauth: false
-
-chpasswd:
-  expire: false
-
-write_files:
-  - path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
-    permissions: "0644"
-    content: |
-      network: {config: disabled}
-
-  - path: /etc/netplan/01-bastion.yaml
-    permissions: "0600"
-    content: |
-      network:
-        version: 2
-        ethernets:
-          ens3:
-            dhcp4: true
-          ens4:
-            dhcp4: true
-            dhcp4-overrides:
-              use-routes: false
-              use-dns: false
-
-runcmd:
-  - rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/99-bastion.yaml
-  - netplan generate
-  - netplan apply
-""" 
+USER_DATA = get_user_data_config()
 
 
-def create() -> tuple[
-    openstack.compute.Instance,
-    openstack.compute.Instance,
-    openstack.compute.Instance,
-    openstack.compute.Instance,
-    openstack.compute.Instance,
-    openstack.compute.Instance,
-]:
+def create() -> SharedInfrastructure:
     """Create primary and backup instances for HAProxy and Forward Proxy clusters."""
-    image = openstack.images.get_image(name=image_name)
-    flavor = openstack.compute.get_flavor(name=flavor_name)
+
 
     # -------------------------------------------------------------------------
     # 1. HAProxy Cluster Instances (Inbound)
@@ -154,4 +110,13 @@ def create() -> tuple[
         ),
         key_pair=keypair.name,
     )
-    return haproxy_master, haproxy_backup, squid_master, squid_backup, bastion_vm,client_vm
+    return SharedInfrastructure(
+        haproxy_master=haproxy_master,
+        haproxy_backup=haproxy_backup,
+        squid_master=squid_master,
+        squid_backup=squid_backup,
+        bastion=bastion_vm,
+        haproxy_vip_port=vip_haproxy_port,
+        squid_vip_port=vip_squid_port,
+        test_client=client_vm
+    )

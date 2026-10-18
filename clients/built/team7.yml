@@ -1,0 +1,23 @@
+name: sandbox-locked
+url: https://locked.example.com
+subnet: outbound_subnet
+
+security_group:
+  description: Restricted egress sandbox
+  ingress:
+    - protocol: tcp
+      port: 22
+      remote_ip_prefix: 203.0.113.0/24
+      description: SSH from office network
+    - protocol: icmp
+      remote_ip_prefix: 10.0.0.0/8
+      description: Ping from internal
+  egress:
+    - protocol: udp
+      port: 53
+      remote_ip_prefix: 10.0.0.2/32
+      description: DNS to internal resolver
+    - protocol: tcp
+      port: 443
+      remote_ip_prefix: 198.51.100.0/24
+      description: HTTPS to approved API only
