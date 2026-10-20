@@ -1,3 +1,4 @@
 haproxy_clients:
   - { host: api.team5.cstam.felcloud.tn, name: team5-api, address: 10.0.1.111, port: 8080 }
-  - { host: api.team5.cstam.felcloud.tn, name: team5-api, address: 10.0.1.102, port: 80 }
+  - { host: api.team5.cstam.felcloud.tn, name: team5-a, address: 10.0.1.102, port: 80 }
+  - { host: api.team5.cstam.felcloud.tn, name: team6-web, address: 10.0.1.103, port: 8080 }
