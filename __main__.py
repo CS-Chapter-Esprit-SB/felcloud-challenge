@@ -3,9 +3,11 @@ import pulumi
 from resources.compute import create
 from resources.helpers import generate_inventory_file 
 from resources.sandboxes.loader import load_sandboxes
+from resources.keypairs import keypair
 from resources.sandboxes.team_sandbox import SandboxManager
+from resources.sandboxes.models import SharedService
 from resources.network import inbound_subnet,outbound_subnet
-from resources.security_groups import secgroup_bastion
+from resources.security_groups import secgroup_bastion,secgroup_haproxy,secgroup_fwd_proxy,ssh_sec
 from resources.ports import (
     haproxy_backup_port,
     haproxy_primary_port,
@@ -18,7 +20,7 @@ from resources.ports import (
     bastion_port_outbound
 )
 
-
+configs = pulumi.Config()
 
 
 # -----------------------------------------------------------------------------
@@ -63,12 +65,19 @@ sandbox_configs = load_sandboxes()
 
 manager = SandboxManager(
     subnets={"inbound_subnet": inbound_subnet, "outbound_subnet": outbound_subnet},
-    allowed_ingress=[(secgroup_bastion.id, 22)],
+    shared_services=[
+        SharedService("haproxy", secgroup_haproxy.id, 443, subnet="inbound_subnet"),
+        SharedService("squid", secgroup_fwd_proxy.id, 3128, subnet="outbound_subnet"),
+        #SharedService("bastion", secgroup_bastion.id, 22),   # 
+        SharedService("ssh", ssh_sec.id, 22),           # 
+    ],
+    key_pair=keypair.name,
 )
 
 # Provision each sandbox.
-for config_path, sandbox_config in sandbox_configs:
+for config_path, sandbox_config in sandbox_configs[0]:
     sandbox = manager.create_instance(sandbox_config)
+
 
 pulumi.export("squid_cluster_vip", squid_vip)
 

@@ -1,0 +1,12 @@
+name: client-03
+url: https://client03.example.com
+subnet: inbound_subnet
+ip: 10.0.1.103
+
+security_group:
+  description: Allow client-03 to access HAProxy over HTTP
+  egress:
+    - protocol: tcp
+      port: 80
+      remote_ip_prefix: 10.0.1.0/24
+      description: Allow outbound HTTP traffic to HAProxy

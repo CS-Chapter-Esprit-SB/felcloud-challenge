@@ -1,0 +1,32 @@
+services:
+  monitoring-api:
+    image: sandbox-monitor:latest
+    container_name: sandbox-monitor-api
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    command:
+      - /app/.venv/bin/uvicorn
+      - app.main:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8000"
+
+  monitoring-consumer:
+    image: sandbox-monitor:latest
+    container_name: sandbox-monitor-consumer
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - app.consumer
+    volumes:
+      - /var/log/remote-haproxy.log:/var/log/remote-haproxy.log:ro
+      - /home/ubuntu/.config/openstack/clouds.yaml:/home/app/.config/openstack/clouds.yaml:ro
+    environment:
+      HOME: /home/app

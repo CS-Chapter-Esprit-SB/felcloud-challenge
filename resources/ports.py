@@ -135,7 +135,7 @@ squid_backup_port = openstack.networking.Port(
 bastion_port_inbound = openstack.networking.Port(
     "bastion-port",
     name="port-bastion",
-    network_id=inbound_subnet.network_id,
+    network_id=inbound_net.id,
     fixed_ips=[
         openstack.networking.PortFixedIpArgs(
             subnet_id=inbound_subnet.id,
@@ -149,7 +149,7 @@ bastion_port_inbound = openstack.networking.Port(
 bastion_port_outbound = openstack.networking.Port(
     "bastion-port-outbound",
     name="port-bastion-outbound",
-    network_id=outbound_subnet.network_id,
+    network_id=outbound_net.id,
     fixed_ips=[
         openstack.networking.PortFixedIpArgs(
             subnet_id=outbound_subnet.id,
@@ -165,10 +165,10 @@ bastion_port_outbound = openstack.networking.Port(
 client_vm_port = openstack.networking.Port(
     "client-vm-port",
     name="port-client-vm",
-    network_id=outbound_subnet.network_id,
+    network_id=inbound_net.id,
     fixed_ips=[
         openstack.networking.PortFixedIpArgs(
-            subnet_id=outbound_subnet.id,
+            subnet_id=inbound_subnet.id,
             ip_address=backend_ip,
         )
     ],

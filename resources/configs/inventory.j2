@@ -36,6 +36,12 @@ bastion_outbound_ip={{ bastion_outbound_ip }}
 inbound_cidr={{ inbound_cidr }}
 outbound_cidr={{ outbound_cidr }}
 
+[client_nodes:vars]
+network_interface=ens3
+bastion_gateway={{ bastion_inbound_ip }}
+subnet_cidr={{ inbound_cidr }}
+neutron_router_ip={{ inbound_gateway_ip }}
+
 [all:vars]
 ansible_user=ubuntu
 ansible_ssh_private_key_file=~/.ssh/aymen_key_2.pem

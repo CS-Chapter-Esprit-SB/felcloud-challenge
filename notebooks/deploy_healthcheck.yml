@@ -1,0 +1,61 @@
+---
+- name: Deploy temporary HTTP health-check server
+  hosts: all
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Ensure Python 3 is installed
+      ansible.builtin.package:
+        name: python3
+        state: present
+
+    - name: Create health-check directory
+      ansible.builtin.file:
+        path: /opt/healthcheck
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Create health-check response
+      ansible.builtin.copy:
+        dest: /opt/healthcheck/index.html
+        content: "Backend is reachable\n"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Install systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/healthcheck-http.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Temporary HTTP Health Check Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=ubuntu
+          WorkingDirectory=/opt/healthcheck
+          ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart health-check service
+
+    - name: Enable and start health-check service
+      ansible.builtin.systemd:
+        name: healthcheck-http
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Restart health-check service
+      ansible.builtin.systemd:
+        name: healthcheck-http
+        state: restarted
+        daemon_reload: true

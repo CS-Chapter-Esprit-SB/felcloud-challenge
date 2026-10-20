@@ -1,0 +1,234 @@
+---
+- name: Configure monitoring VM
+  hosts: client_nodes
+  become: true
+  vars_files:
+    - vault/vault.yml
+
+  vars:
+    monitoring_db_name: sandbox_manager
+    monitoring_db_user: monitoring
+    monitoring_db_password: "{{ vault_monitoring_db_password }}"
+
+    # IP of this monitoring VM, obtained from inventory.
+    monitoring_server_ip: "{{ ansible_host }}"
+    monitoring_syslog_port: 514
+    monitoring_log_file: /var/log/remote-haproxy.log
+
+    postgres_listen_addresses: "localhost"
+    internal_supernet: 10.0.1.0/24
+    dns_servers: ["8.8.8.8", "1.1.1.1"]
+
+    monitoring_packages:
+      - podman
+      - postgresql
+      - postgresql-contrib
+      - python3-psycopg2
+      - rsyslog
+      - acl
+
+
+      
+  pre_tasks:
+    # 1. Network: bastion as permanent default gateway, explicit DNS
+    - name: Stop cloud-init from managing the network
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+        mode: "0644"
+        content: |
+          network: {config: disabled}
+
+    - name: Write static netplan using the bastion as gateway
+      ansible.builtin.copy:
+        dest: /etc/netplan/01-monitor.yaml
+        mode: "0600"
+        content: |
+          network:
+            version: 2
+            ethernets:
+              {{ network_interface }}:
+                dhcp4: false
+                mtu: {{ ansible_facts[network_interface]['mtu'] }}
+                addresses:
+                  - {{ ansible_host }}/{{ subnet_cidr.split('/')[1] }}
+                routes:
+                  - to: {{ internal_supernet }}
+                    via: {{ neutron_router_ip }}
+                  - to: default
+                    via: {{ bastion_gateway }}
+                nameservers:
+                  addresses: {{ dns_servers }}
+      register: netplan_cfg
+    - name: Remove cloud-init generated netplan
+      ansible.builtin.file:
+        path: /etc/netplan/50-cloud-init.yaml
+        state: absent
+      register: netplan_cloudinit
+
+    - name: Apply netplan
+      ansible.builtin.command: netplan apply
+      when: netplan_cfg.changed or netplan_cloudinit.changed
+
+    - name: Reconnect after network change
+      ansible.builtin.meta: reset_connection
+
+    - name: Wait for the node to come back
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+  tasks:
+    # ---------------------------------------------------------
+    # Install required software
+    # ---------------------------------------------------------
+
+    - name: Update APT package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install monitoring dependencies
+      ansible.builtin.apt:
+        name: "{{ monitoring_packages }}"
+        state: present
+
+    # ---------------------------------------------------------
+    # Configure PostgreSQL
+    # ---------------------------------------------------------
+
+    - name: Configure PostgreSQL listening addresses
+      community.postgresql.postgresql_set:
+        name: listen_addresses
+        value: "{{ postgres_listen_addresses }}"
+      become: true
+      become_user: postgres
+      become_method: sudo
+      notify: Restart PostgreSQL
+
+    - name: Apply PostgreSQL configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Create monitoring database user
+      community.postgresql.postgresql_user:
+        name: "{{ monitoring_db_user }}"
+        password: "{{ monitoring_db_password }}"
+        role_attr_flags: LOGIN
+        state: present
+      become: true
+      become_user: postgres
+      become_method: sudo
+      no_log: true
+
+    - name: Create monitoring database
+      community.postgresql.postgresql_db:
+        name: "{{ monitoring_db_name }}"
+        owner: "{{ monitoring_db_user }}"
+        state: present
+      become: true
+      become_user: postgres
+      become_method: sudo
+
+    # ---------------------------------------------------------
+    # Configure rsyslog receiver for HAProxy logs
+    # ---------------------------------------------------------
+
+    - name: Ensure rsyslog is enabled and running
+      ansible.builtin.systemd:
+        name: rsyslog
+        enabled: true
+        state: started
+
+    - name: Configure rsyslog to receive remote HAProxy logs
+      ansible.builtin.copy:
+        dest: /etc/rsyslog.d/10-haproxy-receiver.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          module(load="imtcp")
+
+          ruleset(name="haproxy_remote") {
+              action(
+                  type="omfile"
+                  file="{{ monitoring_log_file }}"
+                  fileCreateMode="0640"
+                  fileOwner="syslog"
+                  fileGroup="adm"
+              )
+          }
+
+          input(
+              type="imtcp"
+              address="{{ monitoring_server_ip }}"
+              port="{{ monitoring_syslog_port }}"
+              ruleset="haproxy_remote"
+          )
+      notify: Restart rsyslog
+
+    - name: Validate rsyslog configuration
+      ansible.builtin.command:
+        argv:
+          - rsyslogd
+          - -N1
+      changed_when: false
+
+    - name: Apply rsyslog receiver configuration
+      ansible.builtin.meta: flush_handlers
+
+    # ---------------------------------------------------------
+    # Create application directories
+    # ---------------------------------------------------------
+
+    - name: Create monitoring application directory
+      ansible.builtin.file:
+        path: /opt/sandbox-manager
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Create monitoring configuration directory
+      ansible.builtin.file:
+        path: /etc/sandbox-manager
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    # ---------------------------------------------------------
+    # Verify PostgreSQL
+    # ---------------------------------------------------------
+
+
+    - name: Display monitoring database status
+      ansible.builtin.debug:
+        msg: "Monitoring database '{{ monitoring_db_name }}' is configured."
+
+    # ---------------------------------------------------------
+    # Verify rsyslog receiver
+    # ---------------------------------------------------------
+
+    - name: Check rsyslog service status
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - rsyslog
+      changed_when: false
+
+    - name: Display log receiver configuration
+      ansible.builtin.debug:
+        msg: >-
+          HAProxy log receiver configured on
+          {{ monitoring_server_ip }}:{{ monitoring_syslog_port }}.
+          Logs will be stored in {{ monitoring_log_file }}.
+
+  handlers:
+    - name: Restart PostgreSQL
+      ansible.builtin.systemd:
+        name: postgresql
+        state: restarted
+
+    - name: Restart rsyslog
+      ansible.builtin.systemd:
+        name: rsyslog
+        state: restarted

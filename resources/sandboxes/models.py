@@ -1,9 +1,10 @@
 from ipaddress import IPv4Address, IPv4Network
 from typing import ClassVar, Literal, Self
+from collections.abc import Sequence
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 from dataclasses import dataclass
-from pulumi import Output
+from pulumi import Output,Input
 from pulumi_openstack import compute, networking
 
 class SecurityGroupRuleSpec(BaseModel):
@@ -62,24 +63,43 @@ class Sandbox(BaseModel):
     security_group: SecurityGroupSpec = Field(default_factory=SecurityGroupSpec)
 
 @dataclass(frozen=True)
-class SandboxResources:
-    """Everything created for one sandbox."""
+class SharedService:
+    """An existing shared-infra security group every sandbox joins."""
+    name: str
+    security_group_id: Input[str]
+    port: int                      # informational only, the rules live in the group itself
+    subnet: str | None = None      # key in `subnets`; None = the sandbox's own subnet
 
+
+@dataclass(frozen=True)
+class SandboxResources:
     name: str
     hostname: str | None
-    security_group: networking.SecGroup
-    ingress_rules: list[networking.SecGroupRule]
-    egress_rules: list[networking.SecGroupRule]
-    port: networking.Port
+    ports: tuple[networking.Port, ...]     # ports[0] is on the sandbox's own subnet
     instance: compute.Instance
+
+    @property
+    def primary_port(self) -> networking.Port:
+        return self.ports[0]
+
     @property
     def id(self) -> Output[str]:
         return self.instance.id
 
-    @property
-    def port_id(self) -> Output[str]:
-        return self.port.id
+@dataclass(frozen=True)
+class Needs:
+    instances: int
+    ports: int
+    security_groups: int
+    security_group_rules: int
+    # Neutron creates 2 default egress rules per new group before the provider
+    # deletes them (delete_default_rules=True). They count toward quota briefly.
+    transient_rules: int
 
-    @property
-    def security_group_id(self) -> Output[str]:
-        return self.security_group.id
+
+class BatchValidationError(Exception):
+    """Raised with EVERY problem found, not just the first."""
+
+    def __init__(self, errors: Sequence[str]) -> None:
+        self.errors:list[str] = list(errors)
+        super().__init__("\n".join(self.errors))

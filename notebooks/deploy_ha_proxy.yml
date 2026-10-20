@@ -9,6 +9,8 @@
     cluster_vip: "{{ haproxy_vip }}"    # inventory defines haproxy_vip, not cluster_vip
     vrrp_auth_pass: "FelHAP51"          # max 8 chars; move to ansible-vault
     internal_supernet: "10.0.0.0/16"
+    monitoring_server_ip: "{{ backend_ip }}"
+    monitoring_syslog_port: 514
 
     keepalived_global_defs:
       - "enable_script_security"
@@ -87,11 +89,48 @@
         - name: Wait for the node to come back
           ansible.builtin.wait_for_connection:
             timeout: 60
+        - name: Install rsyslog for remote HAProxy logging
+          ansible.builtin.apt:
+            name: rsyslog
+            state: present
+            update_cache: true
 
-    # 2. Verify the internet path before installing anything
-    - name: Check outbound connectivity
-      ansible.builtin.command: ping -c2 -W3 8.8.8.8
-      changed_when: false
+        - name: Ensure rsyslog is enabled and running
+          ansible.builtin.systemd:
+            name: rsyslog
+            enabled: true
+            state: started
+        - name: Configure HAProxy log forwarding to monitoring VM
+          ansible.builtin.copy:
+            dest: /etc/rsyslog.d/49-haproxy-forward.conf
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              if ($programname == "haproxy") then {
+                  action(
+                      type="omfwd"
+                      target="{{ monitoring_server_ip }}"
+                      port="{{ monitoring_syslog_port }}"
+                      protocol="tcp"
+                      action.resumeRetryCount="-1"
+                      queue.type="LinkedList"
+                  )
+                  stop
+              }
+          notify: Restart rsyslog
+
+        - name: Validate rsyslog configuration
+          ansible.builtin.command: rsyslogd -N1
+          changed_when: false
+
+        - name: Apply rsyslog configuration before continuing
+          ansible.builtin.meta: flush_handlers
+
+        # 2. Verify the internet path before installing anything
+        - name: Check outbound connectivity
+          ansible.builtin.command: ping -c2 -W3 8.8.8.8
+          changed_when: false
 
     # 3. System prerequisites
     - name: Allow services to bind to non-local Virtual IPs
@@ -188,6 +227,11 @@
         state: started
 
   handlers:
+    - name: Restart rsyslog
+      ansible.builtin.systemd:
+        name: rsyslog
+        state: restarted
+
     - name: Reload HAProxy
       ansible.builtin.systemd:
         name: haproxy

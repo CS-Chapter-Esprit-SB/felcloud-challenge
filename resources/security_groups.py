@@ -31,6 +31,11 @@ secgroup_client_vm = openstack.networking.SecGroup(
     description="Security group for client VM",
 )
 
+ssh_sec = openstack.networking.SecGroup(
+    "secgroup-ssh",
+    name="sg-ssh",
+    description="Security group for SSH access",
+)
 
 # =============================================================================
 # 1. HAProxy Security Group
@@ -171,6 +176,8 @@ rule_fwd_proxy_icmp = openstack.networking.SecGroupRule(
 )
 
 
+
+
 # =============================================================================
 # 3. Bastion / NAT Gateway Security Group
 # =============================================================================
@@ -228,8 +235,6 @@ rule_bastion_tcp_inbound = openstack.networking.SecGroupRule(
     direction="ingress",
     ethertype="IPv4",
     protocol="tcp",
-    port_range_min=1,
-    port_range_max=65535,
     remote_ip_prefix="10.0.1.0/24",
     security_group_id=secgroup_bastion.id,
 )
@@ -239,8 +244,6 @@ rule_bastion_tcp_outbound = openstack.networking.SecGroupRule(
     direction="ingress",
     ethertype="IPv4",
     protocol="tcp",
-    port_range_min=1,
-    port_range_max=65535,
     remote_ip_prefix="10.0.2.0/24",
     security_group_id=secgroup_bastion.id,
 )
@@ -256,8 +259,6 @@ rule_bastion_udp_inbound = openstack.networking.SecGroupRule(
     direction="ingress",
     ethertype="IPv4",
     protocol="udp",
-    port_range_min=1,
-    port_range_max=65535,
     remote_ip_prefix="10.0.1.0/24",
     security_group_id=secgroup_bastion.id,
 )
@@ -267,8 +268,6 @@ rule_bastion_udp_outbound = openstack.networking.SecGroupRule(
     direction="ingress",
     ethertype="IPv4",
     protocol="udp",
-    port_range_min=1,
-    port_range_max=65535,
     remote_ip_prefix="10.0.2.0/24",
     security_group_id=secgroup_bastion.id,
 )
@@ -305,6 +304,32 @@ rule_client_vm_http = openstack.networking.SecGroupRule(
     port_range_min=80,
     port_range_max=80,
     remote_ip_prefix="10.0.0.0/16",
+    security_group_id=secgroup_client_vm.id,
+)
+
+# -----------------------------------------------------------------------------
+# log from HAProxy master and backup
+# -----------------------------------------------------------------------------
+
+rule_client_vm_syslog_master = openstack.networking.SecGroupRule(
+    "rule-client-vm-syslog-master",
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=514,
+    port_range_max=514,
+    remote_ip_prefix="10.0.1.11/32",
+    security_group_id=secgroup_client_vm.id,
+)
+
+rule_client_vm_syslog_backup = openstack.networking.SecGroupRule(
+    "rule-client-vm-syslog-backup",
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=514,
+    port_range_max=514,
+    remote_ip_prefix="10.0.1.12/32",
     security_group_id=secgroup_client_vm.id,
 )
 
@@ -357,4 +382,26 @@ rule_client_vm_ssh_bastion = openstack.networking.SecGroupRule(
     port_range_max=22,
     remote_ip_prefix="10.0.2.254/32",
     security_group_id=secgroup_client_vm.id,
+)
+
+rule_ssh = openstack.networking.SecGroupRule(
+    "ssh_from_bastian",
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=22,
+    port_range_max=22,
+    remote_ip_prefix="10.0.2.254/32",
+    security_group_id=ssh_sec.id,
+)
+
+rule_ssh_backend_healthcheck = openstack.networking.SecGroupRule(
+    "rule-backend-healthcheck",
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=8080,
+    port_range_max=8080,
+    remote_ip_prefix="10.0.1.0/24",
+    security_group_id=ssh_sec.id,
 )

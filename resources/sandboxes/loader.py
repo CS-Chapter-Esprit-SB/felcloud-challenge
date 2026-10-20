@@ -1,7 +1,7 @@
 import yaml
 from pathlib import Path
 from .models import Sandbox
-
+from pydantic import ValidationError
 
 def get_root()->Path:
     """
@@ -18,24 +18,28 @@ PROJECT_ROOT = get_root()
 
 CLIENTS_NEW = PROJECT_ROOT / "clients" / "new"
 CLIENTS_BUILT = PROJECT_ROOT / "clients" / "built"
+LoadedSandbox = tuple[Path, Sandbox]
 
-def load_sandboxes() -> list[tuple[Path, Sandbox]]:
-    """
-    Load pending and previously provisioned sandbox configurations.
 
-    Both directories are included so that moving a YAML file does not
-    remove its corresponding resources from Pulumi's desired state.
-    """
-    loaded: list[tuple[Path, Sandbox]] = []
+def load_sandboxes() -> tuple[list[LoadedSandbox], list[str]]:
+    paths = sorted([*CLIENTS_NEW.glob("*.yaml"), *CLIENTS_NEW.glob("*.yml")])
+    loaded: list[LoadedSandbox] = []
+    errors: list[str] = []
 
-    for directory in (CLIENTS_NEW, CLIENTS_BUILT):
-        directory.mkdir(parents=True, exist_ok=True)
+    for path in paths:
+        try:
+            raw = yaml.safe_load(path.read_text())  # pyright: ignore[reportAny]
+            if not isinstance(raw, dict):
+                errors.append(f"{path.name}: top level must be a mapping")
+                continue
+            loaded.append((path, Sandbox.model_validate(raw)))
+        except yaml.YAMLError as exc:
+            errors.append(f"{path.name}: invalid YAML: {str(exc).splitlines()[0]}")
+        except ValidationError as exc:
+            for err in exc.errors():
+                loc = ".".join(str(p) for p in err["loc"]) or "<root>"
+                errors.append(f"{path.name}: {loc}: {err['msg']}")
 
-        for path in sorted(directory.glob("*.yml")):
-            with path.open("r", encoding="utf-8") as file:
-                data = yaml.safe_load(file)  # pyright: ignore[reportAny]
+    return loaded, errors
 
-            sandbox = Sandbox.model_validate(data)
-            loaded.append((path, sandbox))
 
-    return loaded
