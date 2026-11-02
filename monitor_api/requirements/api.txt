@@ -1,0 +1,9 @@
+auth0-fastapi>=1.0.0b12
+fastapi>=0.156.1
+psycopg[binary]>=3.3.6
+pydantic>=2.14.1
+pydantic-settings>=2.16.2
+python-dotenv>=1.2.4
+sqlalchemy>=2.1.5
+uvicorn[standard]>=0.54.0
+itsdangerous

@@ -1,16 +1,181 @@
 ---
+# ============================================================
+# PLAY 1: Configure network routing through the bastion
+# ============================================================
+
+- name: Configure HAProxy network connectivity
+  hosts: haproxy_nodes
+  become: true
+
+  vars:
+    use_bastion_gateway: true
+    dns_servers:
+      - 8.8.8.8
+      - 1.1.1.1
+    internal_supernet: "10.0.0.0/16"
+
+  pre_tasks:
+    - name: Configure bastion as default gateway
+      when: use_bastion_gateway | bool
+      block:
+
+        - name: Write Netplan gateway configuration
+          ansible.builtin.copy:
+            dest: /etc/netplan/99-haproxy-gateway.yaml
+            mode: "0600"
+            content: |
+              network:
+                version: 2
+                ethernets:
+                  {{ network_interface }}:
+                    dhcp4: true
+                    dhcp4-overrides:
+                      use-routes: false
+                      use-dns: false
+                    routes:
+                      - to: {{ internal_supernet }}
+                        via: {{ neutron_router_ip }}
+                      - to: default
+                        via: {{ bastion_gateway }}
+                      - to: 169.254.169.254/32
+                        via: {{ neutron_router_ip | regex_replace('\.1$', '.2') }}
+                      - to: {{ subnet_cidr }}
+                        scope: link
+                        table: 100
+                      - to: default
+                        via: {{ neutron_router_ip }}
+                        table: 100
+                    routing-policy:
+                      - from: {{ haproxy_vip }}/32
+                        table: 100
+                        priority: 100
+                    nameservers:
+                      addresses: {{ dns_servers }}
+
+          register: gw_cfg
+
+        - name: Apply Netplan
+          ansible.builtin.command: netplan apply
+          when: gw_cfg.changed
+
+        - name: Reset SSH connection
+          ansible.builtin.meta: reset_connection
+
+        - name: Wait for node connection
+          ansible.builtin.wait_for_connection:
+            timeout: 60
+
+    - name: Verify outbound connectivity
+      ansible.builtin.command: ping -c2 -W3 8.8.8.8
+      changed_when: false
+
+
+# ============================================================
+# PLAY 2: Generate the wildcard certificate once
+# ============================================================
+
+- name: Generate HAProxy wildcard certificate
+  hosts: haproxy_nodes
+  become: true
+  gather_facts: false
+
+  vars:
+    domain: stratus.felcloud.tn
+    cert_dir: /etc/haproxy/certs
+    cert_path: /etc/haproxy/certs/haproxy.crt
+    key_path: /etc/haproxy/certs/haproxy.key
+    pem_path: /etc/haproxy/certs/stratus.felcloud.tn.pem
+
+  tasks:
+    - name: Ensure certificate directory exists
+      ansible.builtin.file:
+        path: "{{ cert_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: inventory_hostname == groups['haproxy_nodes'][0]
+
+    - name: Install OpenSSL
+      ansible.builtin.apt:
+        name: openssl
+        state: present
+        update_cache: true
+      when: inventory_hostname == groups['haproxy_nodes'][0]
+
+    - name: Generate wildcard private key and self-signed certificate
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -days
+          - "365"
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - "{{ key_path }}"
+          - -out
+          - "{{ cert_path }}"
+          - -subj
+          - "/CN={{ domain }}"
+          - -addext
+          - "subjectAltName=DNS:{{ domain }},DNS:*.{{ domain }}"
+      args:
+        creates: "{{ cert_path }}"
+      when: inventory_hostname == groups['haproxy_nodes'][0]
+
+    - name: Generate combined HAProxy PEM bundle
+      ansible.builtin.shell:
+        cmd: |
+          cat "{{ key_path }}" "{{ cert_path }}" > "{{ pem_path }}"
+      args:
+        executable: /bin/bash
+        creates: "{{ pem_path }}"
+      when: inventory_hostname == groups['haproxy_nodes'][0]
+
+    - name: Secure certificate files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ key_path }}", mode: "0600" }
+        - { path: "{{ cert_path }}", mode: "0644" }
+        - { path: "{{ pem_path }}", mode: "0600" }
+      when: inventory_hostname == groups['haproxy_nodes'][0]
+
+    - name: Read generated PEM bundle for cluster distribution
+      ansible.builtin.slurp:
+        src: "{{ pem_path }}"
+      register: wildcard_pem
+      when: inventory_hostname == groups['haproxy_nodes'][0]
+
+
+# ============================================================
+# PLAY 3: Configure the HAProxy cluster
+# ============================================================
+
 - name: Deploy HAProxy Cluster with Keepalived VRRP
   hosts: haproxy_nodes
   become: true
 
   vars:
-    use_bastion_gateway: true         # true = default route via the bastion
-    dns_servers: ["8.8.8.8", "1.1.1.1"]
-    cluster_vip: "{{ haproxy_vip }}"    # inventory defines haproxy_vip, not cluster_vip
-    vrrp_auth_pass: "FelHAP51"          # max 8 chars; move to ansible-vault
-    internal_supernet: "10.0.0.0/16"
+    dns_servers:
+      - 8.8.8.8
+      - 1.1.1.1
+
+    cluster_vip: "{{ haproxy_vip }}"
+    vrrp_auth_pass: "FelHAP51"
+
     monitoring_server_ip: "{{ backend_ip }}"
     monitoring_syslog_port: 514
+
+    domain: stratus.felcloud.tn
+    cert_dir: /etc/haproxy/certs
+    pem_path: "/etc/haproxy/certs/{{ domain }}.pem"
 
     keepalived_global_defs:
       - "enable_script_security"
@@ -38,168 +203,106 @@
         check_script: "/usr/bin/pgrep -x haproxy"
         interval: 2
         weight: -20
+
     keepalived_virtual_servers: []
 
   pre_tasks:
-    # 1. Optional: send internet traffic through the bastion
-    - name: Route internet traffic through the bastion
-      when: use_bastion_gateway | bool
-      block:
-        - name: Write netplan override with the bastion as default gateway
-          ansible.builtin.copy:
-            dest: /etc/netplan/99-haproxy-gateway.yaml
-            mode: "0600"
-            content: |
-              network:
-                version: 2
-                ethernets:
-                  {{ network_interface }}:
-                    dhcp4: true
-                    dhcp4-overrides:
-                      use-routes: false
-                      use-dns: false
-                    routes:
-                      - to: {{ internal_supernet }}
-                        via: {{ neutron_router_ip }}
-                      - to: default
-                        via: {{ bastion_gateway }}
-                      - to: 169.254.169.254/32
-                        via: {{ neutron_router_ip | regex_replace('\.1$', '.2') }}
-                      - to: {{ subnet_cidr }}
-                        scope: link
-                        table: 100
-                      - to: default
-                        via: {{ neutron_router_ip }}
-                        table: 100
-                    routing-policy:
-                      - from: {{ cluster_vip }}/32
-                        table: 100
-                        priority: 100
-                    nameservers:
-                      addresses: {{ dns_servers }}
-          register: gw_cfg
 
-        - name: Apply netplan
-          ansible.builtin.command: netplan apply
-          when: gw_cfg.changed
+    # --------------------------------------------------------
+    # System prerequisites
+    # --------------------------------------------------------
 
-        - name: Reconnect after network change
-          ansible.builtin.meta: reset_connection
-
-        - name: Wait for the node to come back
-          ansible.builtin.wait_for_connection:
-            timeout: 60
-        - name: Install rsyslog for remote HAProxy logging
-          ansible.builtin.apt:
-            name: rsyslog
-            state: present
-            update_cache: true
-
-        - name: Ensure rsyslog is enabled and running
-          ansible.builtin.systemd:
-            name: rsyslog
-            enabled: true
-            state: started
-        - name: Configure HAProxy log forwarding to monitoring VM
-          ansible.builtin.copy:
-            dest: /etc/rsyslog.d/49-haproxy-forward.conf
-            owner: root
-            group: root
-            mode: "0644"
-            content: |
-              if ($programname == "haproxy") then {
-                  action(
-                      type="omfwd"
-                      target="{{ monitoring_server_ip }}"
-                      port="{{ monitoring_syslog_port }}"
-                      protocol="tcp"
-                      action.resumeRetryCount="-1"
-                      queue.type="LinkedList"
-                  )
-                  stop
-              }
-          notify: Restart rsyslog
-
-        - name: Validate rsyslog configuration
-          ansible.builtin.command: rsyslogd -N1
-          changed_when: false
-
-        - name: Apply rsyslog configuration before continuing
-          ansible.builtin.meta: flush_handlers
-
-        # 2. Verify the internet path before installing anything
-        - name: Check outbound connectivity
-          ansible.builtin.command: ping -c2 -W3 8.8.8.8
-          changed_when: false
-
-    # 3. System prerequisites
-    - name: Allow services to bind to non-local Virtual IPs
+    - name: Enable non-local VIP binding
       ansible.posix.sysctl:
         name: net.ipv4.ip_nonlocal_bind
-        value: '1'
+        value: "1"
         state: present
         reload: true
-    - name: Install HAProxy
+
+    - name: Install HAProxy and rsyslog
       ansible.builtin.apt:
-        name: haproxy
-        state: present
-        update_cache: true
-    
-    - name: Install openssl
-      ansible.builtin.apt:
-        name: openssl
+        name:
+          - haproxy
+          - rsyslog
         state: present
         update_cache: true
 
-    - name: Ensure haproxy system group exists
+    - name: Ensure HAProxy group exists
       ansible.builtin.group:
         name: haproxy
         state: present
         system: true
 
-    - name: Ensure haproxy system user exists
+    - name: Ensure HAProxy user exists
       ansible.builtin.user:
         name: haproxy
         group: haproxy
         system: true
         shell: /usr/sbin/nologin
 
-    # 4. Certificates
-    - name: Ensure HAProxy certs directory exists
+    # --------------------------------------------------------
+    # Certificate distribution
+    # --------------------------------------------------------
+
+    - name: Ensure HAProxy certificate directory exists
       ansible.builtin.file:
-        path: /etc/haproxy/certs
+        path: "{{ cert_dir }}"
         state: directory
-        owner: haproxy
+        owner: root
         group: haproxy
-        mode: '0750'
+        mode: "0750"
 
-    - name: Generate SSL key and certificate
-      ansible.builtin.command: >
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048
-        -keyout /etc/haproxy/certs/haproxy.key
-        -out /etc/haproxy/certs/haproxy.crt
-        -subj "/CN=felcloud.esprit.tn"
-      args:
-        creates: /etc/haproxy/certs/haproxy.crt
-
-    - name: Create combined PEM bundle for HAProxy
-      ansible.builtin.shell: >
-        cat /etc/haproxy/certs/haproxy.key /etc/haproxy/certs/haproxy.crt
-        > /etc/haproxy/certs/haproxy.pem
-      args:
-        creates: /etc/haproxy/certs/haproxy.pem
-
-    - name: Secure PEM bundle file permissions
-      ansible.builtin.file:
-        path: /etc/haproxy/certs/haproxy.pem
-        owner: haproxy
+    - name: Distribute wildcard certificate to HAProxy nodes
+      ansible.builtin.copy:
+        content: "{{ hostvars[groups['haproxy_nodes'][0]].wildcard_pem.content | b64decode }}"
+        dest: "{{ pem_path }}"
+        owner: root
         group: haproxy
-        mode: '0600'
+        mode: "0640"
+      notify: Reload HAProxy
+
+    # --------------------------------------------------------
+    # Remote HAProxy logging
+    # --------------------------------------------------------
+
+    - name: Enable and start rsyslog
+      ansible.builtin.systemd:
+        name: rsyslog
+        enabled: true
+        state: started
+
+    - name: Configure HAProxy log forwarding
+      ansible.builtin.copy:
+        dest: /etc/rsyslog.d/49-haproxy-forward.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          if ($programname == "haproxy") then {
+              action(
+                  type="omfwd"
+                  target="{{ monitoring_server_ip }}"
+                  port="{{ monitoring_syslog_port }}"
+                  protocol="tcp"
+                  action.resumeRetryCount="-1"
+                  queue.type="LinkedList"
+              )
+              stop
+          }
+      notify: Restart rsyslog
+
+    - name: Validate rsyslog configuration
+      ansible.builtin.command: rsyslogd -N1
+      changed_when: false
+
+    - name: Apply rsyslog configuration
+      ansible.builtin.meta: flush_handlers
 
   roles:
     - role: evrardjp.keepalived
 
   tasks:
+
     - name: Deploy host-to-backend map
       ansible.builtin.template:
         src: hosts.map.j2
@@ -209,7 +312,7 @@
         mode: "0644"
       notify: Reload HAProxy
 
-    - name: Deploy HAProxy configuration (validated before install)
+    - name: Deploy HAProxy configuration
       ansible.builtin.template:
         src: haproxy.cfg.j2
         dest: /etc/haproxy/haproxy.cfg
@@ -217,16 +320,19 @@
         group: root
         mode: "0644"
         validate: "/usr/sbin/haproxy -c -f %s"
-        
       notify: Reload HAProxy
 
-    - name: Make sure HAProxy is enabled and running
+    - name: Enable and start HAProxy
       ansible.builtin.systemd:
         name: haproxy
         enabled: true
         state: started
 
+    - name: Apply pending HAProxy reload
+      ansible.builtin.meta: flush_handlers
+
   handlers:
+
     - name: Restart rsyslog
       ansible.builtin.systemd:
         name: rsyslog

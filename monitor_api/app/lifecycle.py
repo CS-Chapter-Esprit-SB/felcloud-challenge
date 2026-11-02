@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 
-from .openstack_client import (
+
+from monitor_api.shared.openstack_client import (
     classify_instance,
     get_connection,
 )

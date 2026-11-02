@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandbox Lifecycle Manager</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1c2230;--mute:#66708a;--line:#dde1ea;--ok:#12805c;--bad:#c22f2f;--warn:#b26a00;--acc:#2447d6}
+@media (prefers-color-scheme:dark){:root{--bg:#12151c;--panel:#1b202b;--ink:#e6e9f2;--mute:#97a0b8;--line:#2d3445;--ok:#4cc79a;--bad:#ff7b7b;--warn:#f0b34a;--acc:#7b95ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+h1{font-size:18px;margin:0}h2{font-size:15px;margin:0 0 10px}
+main{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;padding:20px 24px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px;min-width:0}
+.wide{grid-column:1/-1}
+.scroll{overflow-x:auto;max-height:340px;overflow-y:auto}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mute);font-weight:500}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12.5px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--mute)}
+.ok{background:var(--ok)}.bad{background:var(--bad)}.warn{background:var(--warn)}
+button{font:inherit;padding:5px 12px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button:hover{border-color:var(--acc)}button:focus-visible{outline:2px solid var(--acc)}
+button.danger{color:var(--bad)}button:disabled{opacity:.5;cursor:wait}
+.gw{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.gw div{flex:1;min-width:160px;border:1px solid var(--line);border-radius:6px;padding:10px}
+.gw .primary{border-color:var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#toast{position:fixed;bottom:16px;right:16px;background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:6px;display:none;max-width:360px}
+.muted{color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Sandbox Lifecycle Manager</h1>
+  <span class="muted" id="updated">Loading…</span>
+</header>
+<main>
+  <section class="wide">
+    <h2>Team sandboxes</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Name</th><th>Status</th><th>Type</th><th>Private IPs</th><th>Last seen</th><th>Idle</th><th>Controls</th></tr></thead>
+      <tbody id="instances"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Gateway health</h2>
+    <div id="gateways"></div>
+  </section>
+
+  <section>
+    <h2>Mapped subdomains</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Subdomain</th><th>Sandbox</th><th>Recent hits</th><th>Last hit</th></tr></thead>
+      <tbody id="subs"></tbody>
+    </table></div>
+  </section>
+
+  <section class="wide">
+    <h2>Live traffic logs</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Time</th><th>Backend</th><th>Server</th><th>Status</th></tr></thead>
+      <tbody id="logs" class="mono"></tbody>
+    </table></div>
+  </section>
+</main>
+<div id="toast" role="status"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
+const fmt = iso => iso ? new Date(iso).toLocaleString() : "—";
+
+async function api(path, method = "GET") {
+  const r = await fetch(path, { method, credentials: "same-origin" });
+  if (r.status === 401) { location.href = "/auth/login"; throw new Error("Signed out"); }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || `Request failed (${r.status})`);
+  return body;
+}
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = "none", 4000);
+}
+
+async function act(btn, path, label) {
+  if (!confirm(`${label}?`)) return;
+  btn.disabled = true;
+  try { const r = await api(path, "POST"); toast(r.message || "Done"); await refresh(); }
+  catch (e) { toast(e.message); }
+  btn.disabled = false;
+}
+
+function statusDot(status) {
+  const cls = status === "ACTIVE" ? "ok" : status === "SHUTOFF" ? "" : "warn";
+  const s = el("span"); s.append(el("span", null, "dot " + cls), status); return s;
+}
+
+function renderInstances(inst, usage) {
+  const idle = Object.fromEntries(usage.instances.map(u => [u.id, u]));
+  const tb = $("instances"); tb.replaceChildren();
+  if (!inst.length) { const tr = el("tr"); const td = el("td", "No sandboxes found yet. Run an inventory sync.", "muted"); td.colSpan = 7; tr.append(td); tb.append(tr); return; }
+  for (const i of inst) {
+    const u = idle[i.id] || {};
+    const tr = el("tr");
+    const ctl = el("td");
+    const start = el("button", "Spin up"), stop = el("button", "Tear down", "danger");
+    start.disabled = i.status === "ACTIVE" || i.classification !== "sandbox";
+    stop.disabled = i.status === "SHUTOFF" || i.classification !== "sandbox";
+    start.onclick = () => act(start, `/instances/${encodeURIComponent(i.id)}/start`, `Spin up ${i.name}`);
+    stop.onclick = () => act(stop, `/instances/${encodeURIComponent(i.id)}/stop`, `Tear down ${i.name}`);
+    ctl.append(start, " ", stop);
+    const td = el("td"); td.append(statusDot(i.status));
+    const ips = el("td", Array.isArray(i.ips) ? i.ips.join(", ") : (i.ips ?? "—"), "mono");
+    const idleTxt = u.idle_minutes == null ? "—" : u.idle_minutes + " min" + (u.idle_candidate ? " (idle)" : "");
+    tr.append(el("td", i.name), td, el("td", i.classification), ips, el("td", fmt(i.last_seen_at)), el("td", idleTxt), ctl);
+    tb.append(tr);
+  }
+}
+
+function renderGateways(g) {
+  const box = $("gateways"); box.replaceChildren();
+  for (const grp of g.groups) {
+    const wrap = el("div"); wrap.append(el("strong", grp.service));
+    const row = el("div", null, "gw");
+    for (const n of grp.nodes) {
+      const d = el("div", null, n.role);
+      d.append(el("strong", n.name), el("br"));
+      const s = el("span"); s.append(el("span", null, "dot " + (n.healthy ? "ok" : "bad")), n.status);
+      d.append(s, el("br"), el("span", (n.role === "primary" ? "Primary" : "Standby") + (n.reachable === false ? " · port unreachable" : ""), "muted"), el("br"), el("span", n.ips.join(", ") || "—", "mono"));
+      row.append(d);
+    }
+    const ctl = el("div", null, "row");
+    const fo = el("button", "Fail over", "danger"), rs = el("button", "Restore master");
+    fo.onclick = () => act(fo, `/gateways/${grp.service}/failover`, `Fail over ${grp.service} to its standby (stops the master VM)`);
+    rs.onclick = () => act(rs, `/gateways/${grp.service}/restore`, `Start the ${grp.service} master VM`);
+    ctl.append(fo, rs); wrap.append(row, ctl); wrap.style.marginBottom = "14px"; box.append(wrap);
+  }
+}
+
+function renderSubs(m) {
+  const tb = $("subs"); tb.replaceChildren();
+  for (const x of m.mappings) {
+    const tr = el("tr");
+    tr.append(el("td", x.subdomain, "mono"), el("td", x.server_name || x.server_id), el("td", x.hits), el("td", fmt(x.last_hit)));
+    tb.append(tr);
+  }
+  if (!m.mappings.length) { const tr = el("tr"); const td = el("td", "No traffic recorded yet.", "muted"); td.colSpan = 4; tr.append(td); tb.append(tr); }
+}
+
+function renderLogs(l) {
+  const tb = $("logs"); tb.replaceChildren();
+  for (const x of l.logs) {
+    const tr = el("tr");
+    const st = el("td"); st.append(el("span", null, "dot " + (x.http_status >= 500 ? "bad" : x.http_status >= 400 ? "warn" : "ok")), String(x.http_status ?? "—"));
+    tr.append(el("td", fmt(x.observed_at)), el("td", x.backend), el("td", x.server_name), st);
+    tb.append(tr);
+  }
+}
+
+async function refresh() {
+  try {
+    const [inst, usage, gw, subs, logs] = await Promise.all([
+      api("/instances"), api("/usage/report"), api("/gateways"), api("/subdomains"), api("/traffic/logs?limit=100"),
+    ]);
+    renderInstances(inst.instances, usage); renderGateways(gw); renderSubs(subs); renderLogs(logs);
+    $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch (e) { $("updated").textContent = e.message; }
+}
+
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>

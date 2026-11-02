@@ -9,7 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_ = load_dotenv()
 
 LOG_FILE = Path(
     os.getenv("HAPROXY_LOG_FILE", "/var/log/remote-haproxy.log")

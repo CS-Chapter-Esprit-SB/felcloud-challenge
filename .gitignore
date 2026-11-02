@@ -5,3 +5,4 @@ clouds.json
 output.log
 inventory.ini
 ssh/config
+./monitor_api/.env

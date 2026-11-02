@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+
+# =========================
+# Builder
+# =========================
+FROM python:3.12-slim AS builder
+
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN python -m venv "$VIRTUAL_ENV"
+
+WORKDIR /build
+
+COPY requirements/consumer.txt .
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r consumer.txt
+
+
+# =========================
+# Runtime
+# =========================
+FROM python:3.12-slim AS runtime
+
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/app
+
+WORKDIR /app
+
+# Copy installed dependencies
+COPY --from=builder /opt/venv /opt/venv
+
+# Copy consumer source
+COPY __init__.py ./monitor_api/__init__.py
+COPY consumer/ ./monitor_api/consumer/
+COPY shared/ ./monitor_api/shared/
+
+# Create non-root user and OpenStack configuration directory
+RUN useradd --create-home --uid 10001 app \
+    && mkdir -p /home/app/.config/openstack \
+    && chown -R app:app /app /home/app
+
+USER app
+
+CMD ["python", "-m", "monitor_api.consumer.consumer"]

@@ -307,6 +307,17 @@ rule_client_vm_http = openstack.networking.SecGroupRule(
     security_group_id=secgroup_client_vm.id,
 )
 
+rule_client_vm_http_2 = openstack.networking.SecGroupRule(
+    "rule-client-vm-http-2",
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=8000,
+    port_range_max=8000,
+    remote_ip_prefix="10.0.0.0/16",
+    security_group_id=secgroup_client_vm.id,
+)
+
 # -----------------------------------------------------------------------------
 # log from HAProxy master and backup
 # -----------------------------------------------------------------------------

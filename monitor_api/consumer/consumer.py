@@ -5,19 +5,17 @@ import logging
 import os
 import re
 import time
-from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
 
-from .database import Base, SessionLocal, engine
-from .models import ActivityEvent, ConsumerState, Instance
-from .openstack_client import fetch_instances
+from monitor_api.shared.database import Base, SessionLocal, engine
+from monitor_api.shared.models import ActivityEvent, ConsumerState, Instance
+from monitor_api.shared.openstack_client import fetch_instances
 
-load_dotenv()
+_ = load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -136,7 +134,7 @@ def read_new_lines(
     lines: list[tuple[int, str]] = []
 
     with path.open("rb") as file:
-        file.seek(offset)
+        _ = file.seek(offset)
 
         while True:
             line_start = file.tell()

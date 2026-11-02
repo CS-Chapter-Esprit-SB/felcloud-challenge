@@ -15,7 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .database import Base
+from monitor_api.shared.database import Base
 
 
 class Instance(Base):
